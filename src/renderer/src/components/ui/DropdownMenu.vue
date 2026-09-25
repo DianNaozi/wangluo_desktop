@@ -1,0 +1,2 @@
+<script setup lang="ts">import { DropdownMenuContent, DropdownMenuPortal, DropdownMenuRoot, DropdownMenuTrigger } from 'reka-ui'</script>
+<template><DropdownMenuRoot><DropdownMenuTrigger as-child><slot name="trigger" /></DropdownMenuTrigger><DropdownMenuPortal><DropdownMenuContent class="z-50 min-w-36 rounded-lg border border-line bg-surface-raised p-1 shadow-xl"><slot /></DropdownMenuContent></DropdownMenuPortal></DropdownMenuRoot></template>

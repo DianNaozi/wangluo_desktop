@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+.env
+*.log
+*.db
+*.db-shm
+*.db-wal
+thumbnail-cache/

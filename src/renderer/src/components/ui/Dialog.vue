@@ -1,0 +1,2 @@
+<script setup lang="ts">import { DialogContent, DialogOverlay, DialogPortal, DialogRoot, DialogTrigger } from 'reka-ui'</script>
+<template><DialogRoot><DialogTrigger as-child><slot name="trigger" /></DialogTrigger><DialogPortal><DialogOverlay class="fixed inset-0 bg-black/60" /><DialogContent class="fixed left-1/2 top-1/2 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-line bg-surface p-5"><slot /></DialogContent></DialogPortal></DialogRoot></template>

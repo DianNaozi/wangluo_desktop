@@ -1,0 +1,8 @@
+@import "tailwindcss";
+@theme { --color-canvas: var(--app-canvas); --color-surface: var(--app-surface); --color-surface-raised: var(--app-surface-raised); --color-surface-hover: var(--app-surface-hover); --color-line: var(--app-line); --color-foreground: var(--app-foreground); --color-muted: var(--app-muted); --color-accent: #7c3aed; --color-accent-strong: #6d28d9; --radius-card: .75rem; }
+:root { --app-canvas: #f7f7f8; --app-surface: #ffffff; --app-surface-raised: #ffffff; --app-surface-hover: #f1f1f3; --app-line: #e4e4e7; --app-foreground: #18181b; --app-muted: #71717a; color-scheme: light; }
+:root.dark { --app-canvas: #09090b; --app-surface: #111113; --app-surface-raised: #18181b; --app-surface-hover: #27272a; --app-line: #27272a; --app-foreground: #f4f4f5; --app-muted: #a1a1aa; color-scheme: dark; }
+@layer base { * { @apply border-line; } html { @apply bg-canvas text-foreground; } body { @apply min-h-screen bg-canvas font-sans antialiased; } button, input { font: inherit; } }
+:root:not(.dark) .text-zinc-100, :root:not(.dark) .text-zinc-200, :root:not(.dark) .text-zinc-300 { color: #27272a; }
+:root:not(.dark) .text-zinc-400, :root:not(.dark) .text-zinc-500, :root:not(.dark) .text-zinc-600 { color: #71717a; }
+:root:not(.dark) .bg-zinc-800 { background-color: #f1f1f3; }

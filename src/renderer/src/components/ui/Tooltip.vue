@@ -1,0 +1,2 @@
+<script setup lang="ts">import { TooltipContent, TooltipPortal, TooltipProvider, TooltipRoot, TooltipTrigger } from 'reka-ui'</script>
+<template><TooltipProvider><TooltipRoot><TooltipTrigger as-child><slot name="trigger" /></TooltipTrigger><TooltipPortal><TooltipContent class="z-50 rounded-md bg-zinc-800 px-2 py-1 text-xs text-zinc-100"><slot /></TooltipContent></TooltipPortal></TooltipRoot></TooltipProvider></template>
