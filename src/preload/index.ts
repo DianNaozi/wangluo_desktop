@@ -4,32 +4,37 @@ export type MediaKind = 'image' | 'video' | 'file'
 export type ImportJobStatus = 'planned' | 'queued' | 'running' | 'completed' | 'partial_failed' | 'interrupted'
 export type ImportEntryStatus = 'planned' | 'hashing' | 'copying' | 'imported' | 'duplicate' | 'skipped' | 'failed'
 export type PreviewStatus = 'not_requested' | 'pending' | 'generating' | 'ready' | 'failed'
-export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; previewStatus: PreviewStatus }
+export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; mediaUrl: string; previewStatus: PreviewStatus }
 export type AlbumDetail = { id: string; title: string; updatedAt: number; media: LibraryMedia[] }
-export type TrashItem = { entityType: 'media' | 'album' | 'orphan'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number; state: 'trashed' | 'pending_trash' | 'pending_restore'; failureReason: string | null }
+export type FolderSummary = { id: string; title: string; parentId: string | null; updatedAt: number; folderCount: number; albumCount: number; mediaCount: number }
+export type FolderDetail = FolderSummary & { breadcrumbs: Array<{ id: string; title: string }>; folders: FolderSummary[]; albums: Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }>; media: LibraryMedia[] }
+export type TrashItem = { entityType: 'media' | 'album' | 'folder' | 'orphan'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number; state: 'trashed' | 'pending_trash' | 'pending_restore'; failureReason: string | null }
 export type TrashSnapshot = { items: TrashItem[] }
 export type TrashOperationResult = { succeeded: string[]; pending: string[]; failed: Array<{ id: string; reason: string }> }
 export type ImportJobSummary = { id: string; sourceKind: 'files' | 'folders'; status: ImportJobStatus; totalEntries: number; totalBytes: number; processedEntries: number; importedEntries: number; duplicateEntries: number; failedEntries: number; skippedEntries: number; sourceCleanupFailedEntries: number; createdAt: number; startedAt: number | null; completedAt: number | null }
 export type ImportEntrySummary = { id: string; sourceName: string; relativePath: string; sourceSize: number; mediaKind: MediaKind; status: ImportEntryStatus; errorCode: string | null; errorMessage: string | null; sourceCleanupStatus: 'not_requested' | 'pending' | 'trashed' | 'failed'; sourceCleanupError: string | null }
 export type ImportJobDetail = ImportJobSummary & { entries: ImportEntrySummary[] }
-export type LibrarySnapshot = { totals: { all: number; images: number; videos: number; files: number }; albums: Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }>; looseMedia: LibraryMedia[] }
+export type LibrarySnapshot = { totals: { all: number; images: number; videos: number; files: number }; folders: FolderSummary[]; albums: Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }>; looseMedia: LibraryMedia[] }
 
 const api = {
   version: '1.0',
   app: { getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version') },
   media: {
-    importFiles: (): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-files'),
-    importFolders: (): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-folders'),
+    importFiles: (folderId: string | null = null): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-files', folderId),
+    importFolders: (folderId: string | null = null): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-folders', folderId),
     getJobs: (): Promise<ImportJobSummary[]> => ipcRenderer.invoke('media:get-jobs'),
     getJob: (jobId: string): Promise<ImportJobDetail> => ipcRenderer.invoke('media:get-job', jobId),
     retryJob: (jobId: string): Promise<ImportJobSummary> => ipcRenderer.invoke('media:retry-job', jobId),
     rebuildPreviews: (): Promise<number> => ipcRenderer.invoke('media:rebuild-previews'),
     trashMedia: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:trash-media', id),
     trashAlbum: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:trash-album', id),
+    trashFolder: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:trash-folder', id),
     restoreMedia: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:restore-media', id),
     restoreAlbum: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:restore-album', id),
+    restoreFolder: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:restore-folder', id),
     purgeTrash: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:purge-trash', id),
     purgeAlbum: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:purge-album', id),
+    purgeFolder: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:purge-folder', id),
     purgeAllTrash: (): Promise<TrashOperationResult> => ipcRenderer.invoke('media:purge-all-trash'),
     exportOrphan: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:export-orphan', id),
     purgeOrphan: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:purge-orphan', id),
@@ -49,7 +54,15 @@ const api = {
       return () => ipcRenderer.removeListener('media:import-service-error', handler)
     }
   },
-  library: { getSnapshot: (): Promise<LibrarySnapshot> => ipcRenderer.invoke('media:get-library'), getAlbum: (id: string): Promise<AlbumDetail> => ipcRenderer.invoke('media:get-album', id), getTrash: (): Promise<TrashSnapshot> => ipcRenderer.invoke('media:get-trash') },
+  library: {
+    getSnapshot: (): Promise<LibrarySnapshot> => ipcRenderer.invoke('media:get-library'),
+    getAlbum: (id: string): Promise<AlbumDetail> => ipcRenderer.invoke('media:get-album', id),
+    getFolder: (id: string): Promise<FolderDetail> => ipcRenderer.invoke('media:get-folder', id),
+    createFolder: (title: string, parentId: string | null): Promise<FolderSummary> => ipcRenderer.invoke('media:create-folder', title, parentId),
+    moveMedia: (mediaId: string, folderId: string | null): Promise<void> => ipcRenderer.invoke('media:move-media', mediaId, folderId),
+    moveAlbum: (albumId: string, folderId: string | null): Promise<void> => ipcRenderer.invoke('media:move-album', albumId, folderId),
+    getTrash: (): Promise<TrashSnapshot> => ipcRenderer.invoke('media:get-trash')
+  },
   settings: {
     getResourceDirectory: (): Promise<ResourceDirectory> => ipcRenderer.invoke('settings:get-resource-directory'),
     pickResourceDirectory: (): Promise<string | null> => ipcRenderer.invoke('settings:pick-resource-directory'),

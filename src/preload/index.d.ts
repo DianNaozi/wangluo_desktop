@@ -8,6 +8,7 @@ export type LibraryMedia = {
     mediaKind: MediaKind;
     importedAt: number;
     previewUrl: string | null;
+    mediaUrl: string;
     previewStatus: PreviewStatus;
 };
 export type AlbumDetail = {
@@ -16,8 +17,32 @@ export type AlbumDetail = {
     updatedAt: number;
     media: LibraryMedia[];
 };
+export type FolderSummary = {
+    id: string;
+    title: string;
+    parentId: string | null;
+    updatedAt: number;
+    folderCount: number;
+    albumCount: number;
+    mediaCount: number;
+};
+export type FolderDetail = FolderSummary & {
+    breadcrumbs: Array<{
+        id: string;
+        title: string;
+    }>;
+    folders: FolderSummary[];
+    albums: Array<{
+        id: string;
+        title: string;
+        mediaCount: number;
+        updatedAt: number;
+        coverPreviewUrl: string | null;
+    }>;
+    media: LibraryMedia[];
+};
 export type TrashItem = {
-    entityType: 'media' | 'album' | 'orphan';
+    entityType: 'media' | 'album' | 'folder' | 'orphan';
     id: string;
     title: string;
     mediaKind: MediaKind | null;
@@ -76,6 +101,7 @@ export type LibrarySnapshot = {
         videos: number;
         files: number;
     };
+    folders: FolderSummary[];
     albums: Array<{
         id: string;
         title: string;

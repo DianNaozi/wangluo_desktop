@@ -4,9 +4,9 @@ import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createDatabase } from './database'
-import type { AlbumDetail, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
+import type { AlbumDetail, FolderDetail, FolderSummary, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
 
-type Source = { path: string; kind: 'file' | 'folder' }
+type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null }
 type PendingRequest = { resolve(value: unknown): void; reject(reason: Error): void }
 type Service = 'import' | 'preview'
 type SourceDisposalRequest = { entryId: string; sourcePath: string; sourceRootPath: string | null; sourceSize: number; sourceModifiedAt: number }
@@ -153,27 +153,35 @@ export class ImportManager {
     this.deleteSourcesAfterImport = enabled
     await this.request('set-delete-sources-after-import', enabled)
   }
-  async importFiles(owner: BrowserWindow): Promise<ImportJobSummary | null> {
+  async importFiles(owner: BrowserWindow, folderId: string | null = null): Promise<ImportJobSummary | null> {
     const result = await dialog.showOpenDialog(owner, { title: '导入文件', properties: ['openFile', 'multiSelections'], filters: [{ name: '全部文件', extensions: ['*'] }] })
-    return result.canceled || !result.filePaths.length ? null : this.request<ImportJobSummary>('plan', result.filePaths.map((path) => ({ path, kind: 'file' } satisfies Source)))
+    return result.canceled || !result.filePaths.length ? null : this.request<ImportJobSummary>('plan', result.filePaths.map((path) => ({ path, kind: 'file', folderId } satisfies Source)))
   }
-  async importFolders(owner: BrowserWindow): Promise<ImportJobSummary | null> {
+  async importFolders(owner: BrowserWindow, folderId: string | null = null): Promise<ImportJobSummary | null> {
     const result = await dialog.showOpenDialog(owner, { title: '导入文件夹', properties: ['openDirectory', 'multiSelections'] })
-    return result.canceled || !result.filePaths.length ? null : this.request<ImportJobSummary>('plan', result.filePaths.map((path) => ({ path, kind: 'folder' } satisfies Source)))
+    return result.canceled || !result.filePaths.length ? null : this.request<ImportJobSummary>('plan', result.filePaths.map((path) => ({ path, kind: 'folder', folderId } satisfies Source)))
   }
   getJobs(): Promise<ImportJobSummary[]> { return this.request('get-jobs') }
   getJob(jobId: string): Promise<ImportJobDetail> { return this.request('get-job', jobId) }
   getLibrary(): Promise<LibrarySnapshot> { return this.request('get-library') }
   getAlbum(albumId: string): Promise<AlbumDetail> { return this.request('get-album', albumId) }
+  getMediaPath(mediaId: string): Promise<string> { return this.request('get-media-path', mediaId) }
+  getFolder(folderId: string): Promise<FolderDetail> { return this.request('get-folder', folderId) }
+  createFolder(title: string, parentId: string | null): Promise<FolderSummary> { return this.request('create-folder', { title, parentId }) }
+  moveMedia(mediaId: string, folderId: string | null): Promise<void> { return this.request('move-media', { mediaId, folderId }) }
+  moveAlbum(albumId: string, folderId: string | null): Promise<void> { return this.request('move-album', { albumId, folderId }) }
   getTrash(): Promise<TrashSnapshot> { return this.request('get-trash') }
   retry(jobId: string): Promise<ImportJobSummary> { return this.request('retry', jobId) }
   rebuildPreviews(): Promise<number> { return this.previewRequest('rebuild') }
   trashMedia(mediaId: string): Promise<TrashOperationResult> { return this.request('trash-media', mediaId) }
   trashAlbum(albumId: string): Promise<TrashOperationResult> { return this.request('trash-album', albumId) }
+  trashFolder(folderId: string): Promise<TrashOperationResult> { return this.request('trash-folder', folderId) }
   restoreMedia(mediaId: string): Promise<TrashOperationResult> { return this.request('restore-media', mediaId) }
   restoreAlbum(albumId: string): Promise<TrashOperationResult> { return this.request('restore-album', albumId) }
+  restoreFolder(folderId: string): Promise<TrashOperationResult> { return this.request('restore-folder', folderId) }
   purgeTrash(mediaId: string): Promise<TrashOperationResult> { return this.request('purge-trash', mediaId) }
   purgeAlbum(albumId: string): Promise<TrashOperationResult> { return this.request('purge-album', albumId) }
+  purgeFolder(folderId: string): Promise<TrashOperationResult> { return this.request('purge-folder', folderId) }
   purgeAllTrash(): Promise<TrashOperationResult> { return this.request('purge-all-trash') }
   getStorageEligibility(): Promise<StorageEligibility> { return this.request('get-storage-eligibility') }
   async exportOrphan(owner: BrowserWindow, orphanId: string): Promise<TrashOperationResult> {

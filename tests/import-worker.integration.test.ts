@@ -44,7 +44,14 @@ class ImportWorkerClient {
   request<T>(command: string, payload?: unknown): Promise<T> {
     const id = randomUUID()
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject })
+      const timeout = setTimeout(() => {
+        if (!this.pending.delete(id)) return
+        reject(new Error(`Timed out waiting for ${command}`))
+      }, 3000)
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timeout); resolve(value as T) },
+        reject: (reason) => { clearTimeout(timeout); reject(reason) }
+      })
       this.worker.postMessage({ id, command, payload })
     })
   }
@@ -207,5 +214,70 @@ describe('import worker integration', () => {
     await client.request<Job>('plan', [{ path: source, kind: 'file' }])
     await waitFor(() => client.request<Job[]>('get-jobs'), (jobs) => jobs.some((job) => job.status === 'completed'))
     expect((await client.request<StorageEligibility>('get-storage-eligibility')).canChangeResourceDirectory).toBe(false)
+  })
+
+  it('migrates a two-level folder hierarchy with direct album and media parents', () => {
+    const databasePath = join(root, 'folders.sqlite')
+    const { sqlite } = createDatabase(databasePath)
+    try {
+      const columns = (table: string) => (sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name)
+      expect(columns('folders')).toEqual(expect.arrayContaining(['id', 'title', 'parent_id', 'trash_state', 'trashed_at']))
+      expect(columns('albums')).toContain('folder_id')
+      expect(columns('media_items')).toContain('folder_id')
+    } finally { sqlite.close() }
+  })
+
+  it('organizes an unarchived media item into a two-level folder hierarchy', async () => {
+    const source = join(root, 'folder-media.txt')
+    await writeFile(source, 'folder media')
+    await client.request<Job>('plan', [{ path: source, kind: 'file' }])
+    const initial = await waitFor(() => client.request<Library>('get-library'), (library) => library.looseMedia.length === 1)
+    const rootFolder = await client.request<{ id: string }>('create-folder', { title: '旅行', parentId: null })
+    const childFolder = await client.request<{ id: string }>('create-folder', { title: '布鲁塞尔', parentId: rootFolder.id })
+    await expect(client.request('create-folder', { title: '不允许', parentId: childFolder.id })).rejects.toThrow('最多只能创建两层文件夹')
+    await client.request('move-media', { mediaId: initial.looseMedia[0]!.id, folderId: childFolder.id })
+    const detail = await client.request<{ media: Array<{ id: string }> }>('get-folder', childFolder.id)
+    expect(detail.media.map((media) => media.id)).toEqual([initial.looseMedia[0]!.id])
+    expect((await client.request<Library>('get-library')).looseMedia).toHaveLength(0)
+  })
+
+  it('places directly imported files and folder-imported albums in the requested folder', async () => {
+    const target = await client.request<{ id: string }>('create-folder', { title: '旅行', parentId: null })
+    const loose = join(root, 'directly-filed.txt')
+    const sourceDirectory = join(root, 'source-album')
+    await mkdir(sourceDirectory)
+    await writeFile(loose, 'direct')
+    await writeFile(join(sourceDirectory, 'inside.txt'), 'album')
+    await client.request<Job>('plan', [{ path: loose, kind: 'file', folderId: target.id }])
+    await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder', folderId: target.id }])
+    const detail = await waitFor(() => client.request<{ media: Array<{ originalName: string }>; albums: Array<{ title: string }> }>('get-folder', target.id), (folder) => folder.media.length === 1 && folder.albums.length === 1)
+    expect(detail.media[0]!.originalName).toBe('directly-filed.txt')
+    expect(detail.albums[0]!.title).toBe('source-album')
+  })
+
+  it('trashes and restores a folder together with its direct media', async () => {
+    const source = join(root, 'folder-trash.txt')
+    await writeFile(source, 'trash me')
+    const folder = await client.request<{ id: string }>('create-folder', { title: '待删除', parentId: null })
+    await client.request<Job>('plan', [{ path: source, kind: 'file', folderId: folder.id }])
+    await waitFor(() => client.request<{ media: unknown[] }>('get-folder', folder.id), (detail) => detail.media.length === 1)
+    await client.request('trash-folder', folder.id)
+    const trash = await waitFor(() => client.request<Trash>('get-trash'), (snapshot) => snapshot.items.some((item) => item.entityType === 'folder' && item.id === folder.id))
+    expect(trash.items.some((item) => item.entityType === 'folder' && item.id === folder.id)).toBe(true)
+    await client.request('restore-folder', folder.id)
+    expect((await client.request<{ media: unknown[] }>('get-folder', folder.id)).media).toHaveLength(1)
+  })
+
+  it('returns an object path only for an active media item', async () => {
+    const source = join(root, 'viewable.txt')
+    await writeFile(source, 'viewable')
+    await client.request<Job>('plan', [{ path: source, kind: 'file' }])
+    const library = await waitFor(() => client.request<Library>('get-library'), (snapshot) => snapshot.looseMedia.length === 1)
+    const mediaId = library.looseMedia[0]!.id
+    const path = await client.request<string>('get-media-path', mediaId)
+    expect(await readFile(path, 'utf8')).toBe('viewable')
+    await client.request('trash-media', mediaId)
+    await expect(client.request('get-media-path', mediaId)).rejects.toThrow('媒体不存在或不可查看')
+    await expect(client.request('get-media-path', randomUUID())).rejects.toThrow('媒体不存在或不可查看')
   })
 })

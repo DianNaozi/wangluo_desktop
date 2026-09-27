@@ -1,12 +1,15 @@
 import { computed, onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
+import { shouldRefreshFolderDetail } from '@/utils/folder-navigation'
 
 export const useImportStore = defineStore('imports', () => {
   const jobs = ref<ImportJobSummary[]>([])
-  const snapshot = ref<LibrarySnapshot>({ totals: { all: 0, images: 0, videos: 0, files: 0 }, albums: [], looseMedia: [] })
+  const snapshot = ref<LibrarySnapshot>({ totals: { all: 0, images: 0, videos: 0, files: 0 }, folders: [], albums: [], looseMedia: [] })
   const loading = ref(false)
   const error = ref('')
+  const completedImportRevision = ref(0)
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined
+  const completedJobIds = new Set<string>()
   const activeJobs = computed(() => jobs.value.filter((job) => ['planned', 'queued', 'running'].includes(job.status)))
 
   async function refresh(): Promise<void> {
@@ -26,8 +29,8 @@ export const useImportStore = defineStore('imports', () => {
       void window.api.library.getSnapshot().then((next) => { snapshot.value = next }).catch((reason) => { error.value = reason instanceof Error ? reason.message : String(reason) })
     }, immediate ? 0 : 250)
   }
-  async function importFiles(): Promise<void> { await run(() => window.api.media.importFiles()) }
-  async function importFolders(): Promise<void> { await run(() => window.api.media.importFolders()) }
+  async function importFiles(folderId: string | null = null): Promise<void> { await run(() => window.api.media.importFiles(folderId)) }
+  async function importFolders(folderId: string | null = null): Promise<void> { await run(() => window.api.media.importFolders(folderId)) }
   async function retryJob(jobId: string): Promise<void> { await run(() => window.api.media.retryJob(jobId)) }
   async function rebuildPreviews(): Promise<void> { await run(() => window.api.media.rebuildPreviews()) }
   async function trashMedia(id: string): Promise<void> { await run(() => window.api.media.trashMedia(id)) }
@@ -35,7 +38,10 @@ export const useImportStore = defineStore('imports', () => {
   const unsubscribe = window.api.media.onImportProgress((event) => {
     const index = jobs.value.findIndex((job) => job.id === event.job.id)
     if (index === -1) jobs.value.unshift(event.job); else jobs.value.splice(index, 1, event.job)
-    scheduleSnapshotRefresh(['completed', 'partial_failed'].includes(event.job.status))
+    const completed = shouldRefreshFolderDetail(event.job.status)
+    if (completed && !completedJobIds.has(event.job.id)) { completedJobIds.add(event.job.id); completedImportRevision.value += 1 }
+    if (!completed) completedJobIds.delete(event.job.id)
+    scheduleSnapshotRefresh(completed)
   })
   onScopeDispose(unsubscribe)
   const unsubscribePreviews = window.api.media.onPreviewProgress(() => {
@@ -46,5 +52,5 @@ export const useImportStore = defineStore('imports', () => {
   onScopeDispose(unsubscribeServiceErrors)
   onScopeDispose(() => { if (snapshotTimer) clearTimeout(snapshotTimer) })
 
-  return { jobs, snapshot, loading, error, activeJobs, refresh, importFiles, importFolders, retryJob, rebuildPreviews, trashMedia, trashAlbum }
+  return { jobs, snapshot, loading, error, completedImportRevision, activeJobs, refresh, importFiles, importFolders, retryJob, rebuildPreviews, trashMedia, trashAlbum }
 })

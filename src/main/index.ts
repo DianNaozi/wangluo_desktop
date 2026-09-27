@@ -3,6 +3,7 @@ import { access, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/pro
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ImportManager } from './import/import-manager'
+import { createMediaResponse } from './media-response'
 
 let importManager: ImportManager
 let resourceRoot = ''
@@ -44,7 +45,10 @@ async function startImportManager(root: string, deleteSources: boolean): Promise
   importManager = new ImportManager(join(root, 'local-gallery.sqlite'), root, deleteSources)
   await importManager.initialize(root)
 }
-protocol.registerSchemesAsPrivileged([{ scheme: 'gallery-thumb', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'gallery-thumb', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+  { scheme: 'gallery-media', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
+])
 
 function createWindow(): void {
   const window = new BrowserWindow({
@@ -73,21 +77,34 @@ app.whenReady().then(async () => {
       return net.fetch(pathToFileURL(thumbnailPath).toString())
     } catch { return new Response('Not found', { status: 404 }) }
   })
-  ipcMain.handle('media:import-files', (event) => importManager.importFiles(BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()!))
-  ipcMain.handle('media:import-folders', (event) => importManager.importFolders(BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()!))
+  protocol.handle('gallery-media', async (request) => {
+    const mediaId = new URL(request.url).hostname
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mediaId)) return new Response('Not found', { status: 404 })
+    try { return await createMediaResponse(await importManager.getMediaPath(mediaId), request.headers.get('range')) }
+    catch { return new Response('Not found', { status: 404 }) }
+  })
+  ipcMain.handle('media:import-files', (event, folderId: string | null = null) => importManager.importFiles(BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()!, folderId))
+  ipcMain.handle('media:import-folders', (event, folderId: string | null = null) => importManager.importFolders(BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()!, folderId))
   ipcMain.handle('media:get-jobs', () => importManager.getJobs())
   ipcMain.handle('media:get-job', (_event, jobId: string) => importManager.getJob(jobId))
   ipcMain.handle('media:get-library', () => importManager.getLibrary())
   ipcMain.handle('media:get-album', (_event, albumId: string) => importManager.getAlbum(albumId))
+  ipcMain.handle('media:get-folder', (_event, folderId: string) => importManager.getFolder(folderId))
+  ipcMain.handle('media:create-folder', (_event, title: string, parentId: string | null) => importManager.createFolder(title, parentId))
+  ipcMain.handle('media:move-media', (_event, mediaId: string, folderId: string | null) => importManager.moveMedia(mediaId, folderId))
+  ipcMain.handle('media:move-album', (_event, albumId: string, folderId: string | null) => importManager.moveAlbum(albumId, folderId))
   ipcMain.handle('media:get-trash', () => importManager.getTrash())
   ipcMain.handle('media:retry-job', (_event, jobId: string) => importManager.retry(jobId))
   ipcMain.handle('media:rebuild-previews', () => importManager.rebuildPreviews())
   ipcMain.handle('media:trash-media', (_event, mediaId: string) => importManager.trashMedia(mediaId))
   ipcMain.handle('media:trash-album', (_event, albumId: string) => importManager.trashAlbum(albumId))
+  ipcMain.handle('media:trash-folder', (_event, folderId: string) => importManager.trashFolder(folderId))
   ipcMain.handle('media:restore-media', (_event, mediaId: string) => importManager.restoreMedia(mediaId))
   ipcMain.handle('media:restore-album', (_event, albumId: string) => importManager.restoreAlbum(albumId))
+  ipcMain.handle('media:restore-folder', (_event, folderId: string) => importManager.restoreFolder(folderId))
   ipcMain.handle('media:purge-trash', (_event, mediaId: string) => importManager.purgeTrash(mediaId))
   ipcMain.handle('media:purge-album', (_event, albumId: string) => importManager.purgeAlbum(albumId))
+  ipcMain.handle('media:purge-folder', (_event, folderId: string) => importManager.purgeFolder(folderId))
   ipcMain.handle('media:purge-all-trash', () => importManager.purgeAllTrash())
   ipcMain.handle('media:export-orphan', (event, orphanId: string) => importManager.exportOrphan(BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()!, orphanId))
   ipcMain.handle('media:purge-orphan', (_event, orphanId: string) => importManager.purgeOrphan(orphanId))

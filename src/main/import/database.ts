@@ -100,6 +100,32 @@ const migrations: Array<{ id: string; sql: string }> = [
       CREATE INDEX storage_orphans_expires_at_idx ON storage_orphans(expires_at);
     `
   }
+  ,{
+    id: '0006_library_folders',
+    sql: `
+      CREATE TABLE folders (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        parent_id TEXT REFERENCES folders(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        trash_state TEXT NOT NULL DEFAULT 'active',
+        trashed_at INTEGER
+      );
+      CREATE INDEX folders_parent_state_updated_idx ON folders(parent_id, trash_state, updated_at);
+      ALTER TABLE albums ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL;
+      ALTER TABLE media_items ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL;
+      CREATE INDEX albums_folder_state_updated_idx ON albums(folder_id, trash_state, updated_at);
+      CREATE INDEX media_items_folder_state_imported_idx ON media_items(folder_id, trash_state, imported_at);
+    `
+  }
+  ,{
+    id: '0007_import_folder_targets',
+    sql: `
+      ALTER TABLE import_entries ADD COLUMN target_folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL;
+      CREATE INDEX import_entries_target_folder_idx ON import_entries(target_folder_id);
+    `
+  }
 ]
 
 export type GalleryDatabase = { sqlite: Database.Database; db: BetterSQLite3Database }
