@@ -23,6 +23,7 @@ export default defineConfig({
   },
   renderer: {
     plugins: [vue(), tailwindcss()],
+    server: { host: '127.0.0.1' },
     resolve: { alias: { '@': resolve('src/renderer/src') } }
   }
 })

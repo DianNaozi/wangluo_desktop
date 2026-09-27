@@ -5,9 +5,10 @@ export type PreviewStatus = 'not_requested' | 'pending' | 'generating' | 'ready'
 export type TrashState = 'active' | 'pending_trash' | 'trashed' | 'pending_restore'
 export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; previewStatus: PreviewStatus }
 export type AlbumDetail = { id: string; title: string; updatedAt: number; media: LibraryMedia[] }
-export type TrashItem = { entityType: 'media' | 'album'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number }
+export type TrashItem = { entityType: 'media' | 'album' | 'orphan'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number; state: 'trashed' | 'pending_trash' | 'pending_restore'; failureReason: string | null }
 export type TrashSnapshot = { items: TrashItem[] }
 export type TrashOperationResult = { succeeded: string[]; pending: string[]; failed: Array<{ id: string; reason: string }> }
+export type StorageEligibility = { canChangeResourceDirectory: boolean; reason: string | null }
 
 export type ImportJobSummary = {
   id: string
@@ -20,6 +21,7 @@ export type ImportJobSummary = {
   duplicateEntries: number
   failedEntries: number
   skippedEntries: number
+  sourceCleanupFailedEntries: number
   createdAt: number
   startedAt: number | null
   completedAt: number | null
@@ -34,6 +36,8 @@ export type ImportEntrySummary = {
   status: ImportEntryStatus
   errorCode: string | null
   errorMessage: string | null
+  sourceCleanupStatus: 'not_requested' | 'pending' | 'trashed' | 'failed'
+  sourceCleanupError: string | null
 }
 
 export type ImportJobDetail = ImportJobSummary & { entries: ImportEntrySummary[] }

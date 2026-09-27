@@ -12,6 +12,9 @@ export const importJobs = sqliteTable('import_jobs', {
   failedEntries: integer('failed_entries').notNull().default(0),
   skippedEntries: integer('skipped_entries').notNull().default(0),
   createdAt: integer('created_at').notNull(),
+  queuedAt: integer('queued_at').notNull().default(0),
+  deleteSourcesAfterImport: integer('delete_sources_after_import').notNull().default(0),
+  sourceCleanupFailedEntries: integer('source_cleanup_failed_entries').notNull().default(0),
   startedAt: integer('started_at'),
   completedAt: integer('completed_at')
 }, (table) => [index('import_jobs_status_created_at_idx').on(table.status, table.createdAt)])
@@ -32,7 +35,11 @@ export const importEntries = sqliteTable('import_entries', {
   errorCode: text('error_code'),
   errorMessage: text('error_message'),
   createdAt: integer('created_at').notNull(),
-  completedAt: integer('completed_at')
+  completedAt: integer('completed_at'),
+  sourceRootPath: text('source_root_path'),
+  sourceCleanupStatus: text('source_cleanup_status').notNull().default('not_requested'),
+  sourceCleanupError: text('source_cleanup_error'),
+  sourceCleanedAt: integer('source_cleaned_at')
 }, (table) => [index('import_entries_job_status_idx').on(table.jobId, table.status)])
 
 export const mediaItems = sqliteTable('media_items', {

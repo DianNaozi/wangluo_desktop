@@ -66,6 +66,40 @@ const migrations: Array<{ id: string; sql: string }> = [
       CREATE INDEX IF NOT EXISTS albums_trash_state_trashed_at_idx ON albums(trash_state, trashed_at);
     `
   }
+  ,{
+    id: '0003_import_queue',
+    sql: `
+      ALTER TABLE import_jobs ADD COLUMN queued_at INTEGER NOT NULL DEFAULT 0;
+      UPDATE import_jobs SET queued_at = created_at WHERE queued_at = 0;
+      CREATE INDEX IF NOT EXISTS import_jobs_queue_idx ON import_jobs(status, queued_at, created_at);
+    `
+  }
+  ,{
+    id: '0004_source_cleanup',
+    sql: `
+      ALTER TABLE import_jobs ADD COLUMN delete_sources_after_import INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE import_jobs ADD COLUMN source_cleanup_failed_entries INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE import_entries ADD COLUMN source_root_path TEXT;
+      ALTER TABLE import_entries ADD COLUMN source_cleanup_status TEXT NOT NULL DEFAULT 'not_requested';
+      ALTER TABLE import_entries ADD COLUMN source_cleanup_error TEXT;
+      ALTER TABLE import_entries ADD COLUMN source_cleaned_at INTEGER;
+      CREATE INDEX IF NOT EXISTS import_entries_source_cleanup_idx ON import_entries(job_id, source_cleanup_status);
+    `
+  }
+  ,{
+    id: '0005_storage_orphans',
+    sql: `
+      CREATE TABLE storage_orphans (
+        id TEXT PRIMARY KEY,
+        original_relative_path TEXT NOT NULL,
+        quarantined_path TEXT NOT NULL UNIQUE,
+        byte_size INTEGER NOT NULL,
+        discovered_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX storage_orphans_expires_at_idx ON storage_orphans(expires_at);
+    `
+  }
 ]
 
 export type GalleryDatabase = { sqlite: Database.Database; db: BetterSQLite3Database }
@@ -85,7 +119,5 @@ export function createDatabase(databasePath: string): GalleryDatabase {
     applied.run(migration.id, Date.now())
   })
   migrations.forEach(applyMigration)
-  sqlite.prepare("UPDATE import_jobs SET status = 'interrupted' WHERE status IN ('planned', 'queued', 'running')").run()
-  sqlite.prepare("UPDATE media_items SET preview_status = 'pending', preview_error = NULL WHERE preview_status = 'generating'").run()
   return { sqlite, db: drizzle({ client: sqlite }) }
 }
