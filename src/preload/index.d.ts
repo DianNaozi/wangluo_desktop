@@ -14,6 +14,7 @@ export type LibraryMedia = {
 export type AlbumDetail = {
     id: string;
     title: string;
+    folderId: string | null;
     updatedAt: number;
     media: LibraryMedia[];
 };
