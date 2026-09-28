@@ -663,10 +663,10 @@ function getFolder(folderId: string): FolderDetail {
   return { id: folder.id, title: folder.title, parentId: folder.parent_id, updatedAt: Number(folder.updated_at), folderCount: getFolderSummaries(folderId).length, albumCount: getAlbumSummaries(folderId).length, mediaCount: media.length, breadcrumbs, folders: getFolderSummaries(folderId), albums: getAlbumSummaries(folderId), media: media.map(asMedia) }
 }
 function getAlbum(albumId: string): AlbumDetail {
-  const album = sqlite.prepare("SELECT id, title, updated_at FROM albums WHERE id = ? AND trash_state = 'active'").get(albumId) as { id: string; title: string; updated_at: number } | undefined
+  const album = sqlite.prepare("SELECT id, title, folder_id, updated_at FROM albums WHERE id = ? AND trash_state = 'active'").get(albumId) as { id: string; title: string; folder_id: string | null; updated_at: number } | undefined
   if (!album) throw new Error('图集不存在或已在回收站')
   const media = sqlite.prepare("SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status FROM album_items ai JOIN media_items m ON m.id = ai.media_id WHERE ai.album_id = ? AND m.trash_state = 'active' ORDER BY ai.sort_order").all(albumId) as Record<string, unknown>[]
-  return { id: album.id, title: album.title, updatedAt: Number(album.updated_at), media: media.map(asMedia) }
+  return { id: album.id, title: album.title, folderId: album.folder_id, updatedAt: Number(album.updated_at), media: media.map(asMedia) }
 }
 function getMediaPath(mediaId: string): string {
   const media = sqlite.prepare("SELECT object_path FROM media_items WHERE id = ? AND trash_state = 'active'").get(mediaId) as { object_path: string } | undefined

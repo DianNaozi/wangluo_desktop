@@ -255,6 +255,17 @@ describe('import worker integration', () => {
     expect(detail.albums[0]!.title).toBe('source-album')
   })
 
+  it('returns an album parent folder for navigation back to its container', async () => {
+    const target = await client.request<{ id: string }>('create-folder', { title: '旅行', parentId: null })
+    const sourceDirectory = join(root, 'source-album')
+    await mkdir(sourceDirectory)
+    await writeFile(join(sourceDirectory, 'inside.txt'), 'album')
+    await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder', folderId: target.id }])
+    const folder = await waitFor(() => client.request<{ albums: Array<{ id: string }> }>('get-folder', target.id), (detail) => detail.albums.length === 1)
+
+    expect(await client.request<{ folderId: string | null }>('get-album', folder.albums[0]!.id)).toMatchObject({ folderId: target.id })
+  })
+
   it('trashes and restores a folder together with its direct media', async () => {
     const source = join(root, 'folder-trash.txt')
     await writeFile(source, 'trash me')
