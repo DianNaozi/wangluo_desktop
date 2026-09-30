@@ -1,7 +1,18 @@
 import { defineConfig } from 'electron-vite'
+import { cp } from 'node:fs/promises'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'node:path'
+
+function copyRendererPublicAssets() {
+  return {
+    name: 'copy-renderer-public-assets',
+    apply: 'build' as const,
+    async closeBundle() {
+      await cp(resolve('public'), resolve('out/renderer'), { recursive: true, force: true })
+    }
+  }
+}
 
 export default defineConfig({
   main: {
@@ -22,7 +33,7 @@ export default defineConfig({
     }
   },
   renderer: {
-    plugins: [vue(), tailwindcss()],
+    plugins: [vue(), tailwindcss(), copyRendererPublicAssets()],
     server: { host: '127.0.0.1' },
     resolve: { alias: { '@': resolve('src/renderer/src') } }
   }

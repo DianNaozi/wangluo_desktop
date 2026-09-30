@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ContextMenuContent, ContextMenuItem, ContextMenuPortal, ContextMenuRoot, ContextMenuTrigger } from 'reka-ui'
-import { FolderOpen, Images, ListPlus, LoaderCircle, Trash2 } from 'lucide-vue-next'
+import { FolderOpen, Images, ListPlus, LoaderCircle, Trash2, UserRound } from 'lucide-vue-next'
 
 type AlbumCardData = { id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null; coverPreviewPending: boolean }
 
-defineProps<{ album: AlbumCardData; previewUnavailable?: boolean; subtitle: string }>()
-defineEmits<{ open: []; queue: []; delete: []; dragstart: [event: DragEvent]; previewError: [] }>()
+withDefaults(defineProps<{ album: AlbumCardData; previewUnavailable?: boolean; subtitle: string; canAssignCoser?: boolean }>(), { canAssignCoser: false })
+defineEmits<{ open: []; queue: []; delete: []; assignCoser: []; dragstart: [event: DragEvent]; previewError: [] }>()
 </script>
 
 <template>
@@ -24,6 +24,7 @@ defineEmits<{ open: []; queue: []; delete: []; dragstart: [event: DragEvent]; pr
       <ContextMenuContent class="z-50 min-w-40 rounded-lg border border-line bg-surface-raised p-1 shadow-xl">
         <ContextMenuItem class="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-foreground outline-none hover:bg-surface-hover" @select="$emit('open')"><FolderOpen :size="16" />打开</ContextMenuItem>
         <ContextMenuItem class="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-foreground outline-none hover:bg-surface-hover" @select="$emit('queue')"><ListPlus :size="16" />加入播放队列</ContextMenuItem>
+        <ContextMenuItem v-if="canAssignCoser" class="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-foreground outline-none hover:bg-surface-hover" @select="$emit('assignCoser')"><UserRound :size="16" />归入 Coser</ContextMenuItem>
         <ContextMenuItem class="flex cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-sm text-rose-400 outline-none hover:bg-rose-500/10" @select="$emit('delete')"><Trash2 :size="16" />删除</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenuPortal>

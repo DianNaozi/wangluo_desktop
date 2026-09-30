@@ -69,6 +69,23 @@ export const albums = sqliteTable('albums', {
   ,trashedAt: integer('trashed_at')
 })
 
+export const cosers = sqliteTable('cosers', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  nameKey: text('name_key').notNull(),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+  avatarUpdatedAt: integer('avatar_updated_at')
+})
+
+export const coserAliases = sqliteTable('coser_aliases', {
+  id: text('id').primaryKey(),
+  coserId: text('coser_id').notNull().references(() => cosers.id, { onDelete: 'cascade' }),
+  alias: text('alias').notNull(),
+  aliasKey: text('alias_key').notNull(),
+  createdAt: integer('created_at').notNull()
+}, (table) => [uniqueIndex('coser_aliases_coser_key_unique').on(table.coserId, table.aliasKey)])
+
 export const albumItems = sqliteTable('album_items', {
   albumId: text('album_id').notNull().references(() => albums.id, { onDelete: 'cascade' }),
   mediaId: text('media_id').notNull().references(() => mediaItems.id, { onDelete: 'cascade' }),

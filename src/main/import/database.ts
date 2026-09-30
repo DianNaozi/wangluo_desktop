@@ -126,6 +126,35 @@ const migrations: Array<{ id: string; sql: string }> = [
       CREATE INDEX import_entries_target_folder_idx ON import_entries(target_folder_id);
     `
   }
+  ,{
+    id: '0008_coser_albums',
+    sql: `
+      CREATE TABLE cosers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        name_key TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE coser_aliases (
+        id TEXT PRIMARY KEY,
+        coser_id TEXT NOT NULL REFERENCES cosers(id) ON DELETE CASCADE,
+        alias TEXT NOT NULL,
+        alias_key TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(coser_id, alias_key)
+      );
+      CREATE INDEX coser_aliases_coser_idx ON coser_aliases(coser_id);
+      ALTER TABLE albums ADD COLUMN coser_id TEXT REFERENCES cosers(id) ON DELETE SET NULL;
+      CREATE INDEX albums_coser_state_updated_idx ON albums(coser_id, trash_state, updated_at);
+    `
+  }
+  ,{
+    id: '0009_coser_avatars',
+    sql: `
+      ALTER TABLE cosers ADD COLUMN avatar_updated_at INTEGER;
+    `
+  }
 ]
 
 export type GalleryDatabase = { sqlite: Database.Database; db: BetterSQLite3Database }

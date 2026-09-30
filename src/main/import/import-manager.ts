@@ -4,7 +4,7 @@ import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createDatabase } from './database'
-import type { AlbumDetail, FolderDetail, FolderSummary, FolderTreeNode, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
+import type { AlbumDetail, CoserDetail, CoserSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
 
 type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null }
 type PendingRequest = { resolve(value: unknown): void; reject(reason: Error): void }
@@ -171,6 +171,16 @@ export class ImportManager {
   createFolder(title: string, parentId: string | null): Promise<FolderSummary> { return this.request('create-folder', { title, parentId }) }
   moveMedia(mediaId: string, folderId: string | null): Promise<void> { return this.request('move-media', { mediaId, folderId }) }
   moveAlbum(albumId: string, folderId: string | null): Promise<void> { return this.request('move-album', { albumId, folderId }) }
+  getCosers(): Promise<CoserSummary[]> { return this.request('get-cosers') }
+  getCoser(coserId: string): Promise<CoserDetail> { return this.request('get-coser', coserId) }
+  getCoserAvatarMedia(coserId: string): Promise<LibraryMedia[]> { return this.request('get-coser-avatar-media', coserId) }
+  getCoserAvatarSource(coserId: string, mediaId: string): Promise<string> { return this.request('get-coser-avatar-source', { coserId, mediaId }) }
+  createCoser(name: string, aliases: string[]): Promise<CoserSummary> { return this.request('create-coser', { name, aliases }) }
+  updateCoser(id: string, name: string, aliases: string[]): Promise<CoserSummary> { return this.request('update-coser', { id, name, aliases }) }
+  setCoserAvatar(id: string, updatedAt: number | null): Promise<void> { return this.request('set-coser-avatar', { id, updatedAt }) }
+  deleteCoser(id: string): Promise<void> { return this.request('delete-coser', id) }
+  assignAlbumCoser(albumId: string, coserId: string): Promise<void> { return this.request('assign-album-coser', { albumId, coserId }) }
+  unassignAlbumCoser(albumId: string): Promise<void> { return this.request('unassign-album-coser', albumId) }
   getTrash(): Promise<TrashSnapshot> { return this.request('get-trash') }
   retry(jobId: string): Promise<ImportJobSummary> { return this.request('retry', jobId) }
   rebuildPreviews(): Promise<number> { return this.previewRequest('rebuild') }

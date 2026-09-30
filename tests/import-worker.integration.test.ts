@@ -15,6 +15,7 @@ type Library = { totals: { all: number }; albums: Array<{ id: string; coverPrevi
 type FolderTree = Array<{ id: string; title: string; parentId: string | null; itemCount: number; children: FolderTree }>
 type Trash = { items: Array<{ id: string; entityType: string }> }
 type StorageEligibility = { canChangeResourceDirectory: boolean; reason: string | null }
+type Coser = { id: string; name: string; aliases: string[]; albumCount: number; mediaCount: number; albums?: Array<{ id: string }> }
 const runFile = promisify(execFile)
 const canRunFfmpeg = Boolean(ffmpegPath) && spawnSync(ffmpegPath!, ['-version'], { windowsHide: true }).status === 0
 
@@ -369,6 +370,7 @@ describe('import worker integration', () => {
       expect(columns('folders')).toEqual(expect.arrayContaining(['id', 'title', 'parent_id', 'trash_state', 'trashed_at']))
       expect(columns('albums')).toContain('folder_id')
       expect(columns('media_items')).toContain('folder_id')
+      expect(columns('cosers')).toEqual(expect.arrayContaining(['id', 'name', 'avatar_updated_at']))
     } finally { sqlite.close() }
   })
 
@@ -414,7 +416,8 @@ describe('import worker integration', () => {
     await writeFile(loose, 'direct')
     await writeFile(join(sourceDirectory, 'inside.txt'), 'album')
     await client.request<Job>('plan', [{ path: loose, kind: 'file', folderId: target.id }])
-    await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder', folderId: target.id }])
+    const job = await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder', folderId: target.id }])
+    await waitFor(() => client.request<Job[]>('get-jobs'), (jobs) => jobs.some((item) => item.id === job.id && item.status === 'completed'))
     const detail = await waitFor(() => client.request<{ media: Array<{ originalName: string }>; albums: Array<{ title: string }> }>('get-folder', target.id), (folder) => folder.media.length === 1 && folder.albums.length === 1)
     expect(detail.media[0]!.originalName).toBe('directly-filed.txt')
     expect(detail.albums[0]!.title).toBe('source-album')
@@ -429,6 +432,53 @@ describe('import worker integration', () => {
     const folder = await waitFor(() => client.request<{ albums: Array<{ id: string }> }>('get-folder', target.id), (detail) => detail.albums.length === 1)
 
     expect(await client.request<{ folderId: string | null }>('get-album', folder.albums[0]!.id)).toMatchObject({ folderId: target.id })
+  })
+
+  it('groups an album under one Coser and hides it from folders and the library', async () => {
+    const target = await client.request<{ id: string }>('create-folder', { title: '待归类', parentId: null })
+    const sourceDirectory = join(root, 'coser-album')
+    await mkdir(sourceDirectory)
+    await writeFile(join(sourceDirectory, 'inside.txt'), 'album')
+    const job = await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder', folderId: target.id }])
+    await waitFor(() => client.request<Job[]>('get-jobs'), (jobs) => jobs.some((item) => item.id === job.id && item.status === 'completed'))
+    const initialFolder = await waitFor(() => client.request<{ albums: Array<{ id: string }> }>('get-folder', target.id), (detail) => detail.albums.length === 1)
+    const albumId = initialFolder.albums[0]!.id
+
+    const coser = await client.request<Coser>('create-coser', { name: '林柚', aliases: ['Yuzu', '柚子'] })
+    expect(coser).toMatchObject({ name: '林柚', aliases: ['Yuzu', '柚子'], albumCount: 0 })
+    await expect(client.request('create-coser', { name: '其他人', aliases: ['yuzu'] })).rejects.toThrow('名称或别名已被其他 Coser 使用')
+    await client.request('assign-album-coser', { albumId, coserId: coser.id })
+
+    expect((await client.request<Library>('get-library')).albums).not.toContainEqual(expect.objectContaining({ id: albumId }))
+    expect((await client.request<{ albums: Array<{ id: string }> }>('get-folder', target.id)).albums).toHaveLength(0)
+    expect(await client.request<Coser>('get-coser', coser.id)).toMatchObject({ id: coser.id, albumCount: 1, mediaCount: 1, albums: [{ id: albumId }] })
+
+    await client.request('unassign-album-coser', albumId)
+    expect((await client.request<Library>('get-library')).albums).toContainEqual(expect.objectContaining({ id: albumId }))
+    await client.request('assign-album-coser', { albumId, coserId: coser.id })
+    await client.request('delete-coser', coser.id)
+    expect((await client.request<Library>('get-library')).albums).toContainEqual(expect.objectContaining({ id: albumId }))
+    await expect(client.request('get-coser', coser.id)).rejects.toThrow('Coser 不存在')
+  })
+
+  it('only exposes current Coser album images as avatar sources', async () => {
+    const sourceDirectory = join(root, 'avatar-source-album')
+    const sourceImage = join(sourceDirectory, 'portrait.png')
+    await mkdir(sourceDirectory)
+    await sharp({ create: { width: 64, height: 96, channels: 3, background: '#8b5cf6' } }).png().toFile(sourceImage)
+    await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder' }])
+    const library = await waitFor(() => client.request<Library>('get-library'), (snapshot) => snapshot.albums.length === 1)
+    await waitFor(() => client.request<{ media: unknown[] }>('get-album', library.albums[0]!.id), (album) => album.media.length === 1)
+    const coser = await client.request<Coser>('create-coser', { name: '头像来源', aliases: [] })
+    const other = await client.request<Coser>('create-coser', { name: '其他来源', aliases: [] })
+    await client.request('assign-album-coser', { albumId: library.albums[0]!.id, coserId: coser.id })
+
+    const media = await client.request<Array<{ id: string; mediaKind: string }>>('get-coser-avatar-media', coser.id)
+    expect(media).toHaveLength(1)
+    expect(media[0]?.mediaKind).toBe('image')
+    const storedPath = await client.request<string>('get-coser-avatar-source', { coserId: coser.id, mediaId: media[0]!.id })
+    await access(storedPath)
+    await expect(client.request('get-coser-avatar-source', { coserId: other.id, mediaId: media[0]!.id })).rejects.toThrow('头像来源不是当前 Coser 图包中的可用图片')
   })
 
   it('trashes and restores a folder together with its direct media', async () => {

@@ -43,6 +43,23 @@ export type AlbumSummary = {
     coverPreviewUrl: string | null;
     coverPreviewPending: boolean;
 };
+export type CoserSummary = {
+    id: string;
+    name: string;
+    aliases: string[];
+    avatarUrl: string | null;
+    albumCount: number;
+    mediaCount: number;
+    updatedAt: number;
+};
+export type CoserDetail = CoserSummary & {
+    albums: AlbumSummary[];
+};
+export type AvatarCrop = {
+    left: number;
+    top: number;
+    size: number;
+};
 export type FolderDetail = FolderSummary & {
     breadcrumbs: Array<{
         id: string;

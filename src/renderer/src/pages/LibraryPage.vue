@@ -7,6 +7,8 @@ import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import AssignCoserDialog from '@/components/cosers/AssignCoserDialog.vue'
+import CoserDialog from '@/components/cosers/CoserDialog.vue'
 import FolderNameDialog from '@/components/folders/FolderNameDialog.vue'
 import MediaThumbnail from '@/components/media/MediaThumbnail.vue'
 import MediaViewer from '@/components/media/MediaViewer.vue'
@@ -21,6 +23,8 @@ const unavailablePreviews = ref(new Set<string>()); const trashTarget = ref<{ id
 const viewerMediaId = ref<string | null>(null)
 const folderDialogOpen = ref(false)
 const creatingFolder = ref(false)
+const assignCoserOpen = ref(false); const coserDialogOpen = ref(false); const coserBusy = ref(false); const coserError = ref('')
+const cosers = ref<CoserSummary[]>([]); const coserTarget = ref<{ id: string; title: string } | null>(null)
 onMounted(() => { void imports.refresh() })
 const query = computed(() => library.searchQuery.trim().toLocaleLowerCase())
 const albums = computed(() => imports.snapshot.albums.filter((item) => !query.value || item.title.toLocaleLowerCase().includes(query.value)))
@@ -60,17 +64,38 @@ function addSelectedMediaToQueue(): void {
   playback.addMediaBatch(selectedMedia.value, '未归档媒体')
   selection.clear()
 }
+async function openAssignCoser(id: string, title: string): Promise<void> {
+  coserTarget.value = { id, title }; coserError.value = ''
+  try { cosers.value = await window.api.library.getCosers(); assignCoserOpen.value = true } catch (reason) { imports.error = reason instanceof Error ? reason.message : String(reason) }
+}
+async function assignAlbumCoser(coserId: string): Promise<void> {
+  if (!coserTarget.value || coserBusy.value) return
+  coserBusy.value = true
+  try { await window.api.library.assignAlbumCoser(coserTarget.value.id, coserId); assignCoserOpen.value = false; coserTarget.value = null; await imports.refresh() }
+  catch (reason) { coserError.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { coserBusy.value = false }
+}
+function beginCreateCoser(): void { assignCoserOpen.value = false; coserDialogOpen.value = true; coserError.value = '' }
+async function createAndAssignCoser(value: { name: string; aliases: string[] }): Promise<void> {
+  if (!coserTarget.value || coserBusy.value) return
+  coserBusy.value = true
+  try { const coser = await window.api.library.createCoser(value.name, value.aliases); cosers.value = [...cosers.value, coser]; await window.api.library.assignAlbumCoser(coserTarget.value.id, coser.id); coserDialogOpen.value = false; coserTarget.value = null; await imports.refresh() }
+  catch (reason) { coserError.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { coserBusy.value = false }
+}
 </script>
 
 <template>
   <div class="p-6 lg:p-8">
     <div class="mb-6 flex flex-wrap items-end justify-between gap-4"><div><div class="flex items-center gap-2"><h2 class="text-2xl font-semibold tracking-tight text-foreground">媒体库</h2><Badge>{{ imports.snapshot.totals.all }} 项</Badge></div><p class="mt-1.5 text-sm text-muted">图片 {{ imports.snapshot.totals.images }} · 视频 {{ imports.snapshot.totals.videos }} · 普通文件 {{ imports.snapshot.totals.files }}</p></div><div class="flex flex-wrap gap-2"><Button variant="outline" @click="router.push('/trash')"><Trash2 :size="16" />回收站</Button><Button variant="outline" @click="imports.rebuildPreviews"><RotateCcw :size="16" />重新生成预览</Button><Button variant="outline" @click="folderDialogOpen = true"><FolderPlus :size="16" />新建文件夹</Button><Button variant="outline" @click="imports.importFiles"><File :size="16" />导入文件</Button><Button @click="imports.importFolders"><FolderInput :size="16" />导入文件夹</Button></div></div>
     <p v-if="imports.error" class="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">{{ imports.error }}</p>
-    <section v-if="albums.length"><div class="mb-3 flex items-center gap-2"><h3 class="font-semibold text-foreground">图集</h3><span class="text-sm text-muted">{{ albums.length }}</span></div><div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"><AlbumCard v-for="album in albums" :key="album.id" :album="album" :preview-unavailable="unavailablePreviews.has(album.id)" :subtitle="`${dateText(album.updatedAt)} 更新`" @open="router.push(`/albums/${album.id}`)" @queue="addAlbumToQueue(album.id, album.title)" @delete="trashAlbum(album.id, album.title)" @preview-error="hidePreview(album.id)" /></div></section>
+    <section v-if="albums.length"><div class="mb-3 flex items-center gap-2"><h3 class="font-semibold text-foreground">图集</h3><span class="text-sm text-muted">{{ albums.length }}</span></div><div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"><AlbumCard v-for="album in albums" :key="album.id" :album="album" :preview-unavailable="unavailablePreviews.has(album.id)" :subtitle="`${dateText(album.updatedAt)} 更新`" can-assign-coser @open="router.push(`/albums/${album.id}`)" @queue="addAlbumToQueue(album.id, album.title)" @assign-coser="openAssignCoser(album.id, album.title)" @delete="trashAlbum(album.id, album.title)" @preview-error="hidePreview(album.id)" /></div></section>
     <section v-if="looseMedia.length" class="mt-8"><div class="mb-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-6"><div class="flex items-center gap-2"><h3 class="font-semibold text-foreground">未归档媒体</h3><span class="text-sm text-muted">{{ looseMedia.length }}</span></div><div class="flex items-center gap-2"><Button v-if="selectedMedia.length" variant="outline" @click="addSelectedMediaToQueue"><ListPlus :size="16" />加入播放队列（{{ selectedMedia.length }}）</Button><label class="flex items-center gap-2 text-sm text-muted">排序<select v-model="library.librarySortOrder" class="rounded-md border border-line bg-surface px-2 py-1 text-foreground outline-none focus:border-violet-500"><option value="filename">名称（A → Z）</option><option value="importedAt">导入时间（最新优先）</option></select></label></div></div><div class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"><article v-for="media in looseMedia" :key="media.id" :class="['cursor-zoom-in rounded-lg border bg-surface p-3', selection.selectedIds.has(media.id) ? 'border-violet-500 ring-1 ring-violet-500/30' : 'border-line']" @click="viewerMediaId = media.id"><div class="relative aspect-[4/3] overflow-hidden rounded-md"><MediaThumbnail :media="media" :preview-unavailable="unavailablePreviews.has(media.id)" class="size-full" @preview-error="hidePreview(media.id)" @retry="retryPreview(media.id)" /><Checkbox v-if="media.mediaKind !== 'file'" class="absolute left-2 top-2" :model-value="selection.selectedIds.has(media.id)" @click.stop @update:model-value="selection.toggle(media.id)" /></div><div class="mt-2 flex items-start gap-1"><div class="min-w-0 flex-1"><p class="truncate text-sm font-medium text-foreground">{{ media.originalName }}</p><p class="mt-0.5 text-xs text-muted">{{ media.mediaKind === 'image' ? '图片' : media.mediaKind === 'video' ? '视频' : '文件' }} · {{ dateText(media.importedAt) }}</p></div><button class="rounded p-1 text-muted hover:bg-surface-hover hover:text-rose-400" title="移入回收站" @click.stop="trashMedia(media.id, media.originalName)"><Trash2 :size="15" /></button></div></article></div></section>
     <MediaViewer :open="Boolean(viewerMediaId)" :media="looseMedia" :active-id="viewerMediaId" @close="viewerMediaId = null" @update:active-id="viewerMediaId = $event" />
     <div v-if="!imports.folderTree.length && !albums.length && !looseMedia.length" class="grid min-h-72 place-items-center rounded-card border border-dashed border-line"><div class="text-center"><Images class="mx-auto text-muted" :size="24" /><p class="mt-3 font-medium text-foreground">还没有已导入的媒体</p><Button class="mt-4" @click="imports.importFiles"><File :size="16" />选择文件</Button></div></div>
     <ConfirmDialog :open="Boolean(trashTarget)" title="移入回收站" :description="trashTarget ? `将${trashTarget.isAlbum ? '图集“' : '“'}${trashTarget.name}${trashTarget.isAlbum ? '”及其全部媒体' : '”'}移入回收站？原始导入来源文件不会被删除。` : ''" confirm-text="移入回收站" @update:open="(open) => { if (!open) trashTarget = null }" @confirm="confirmTrash" />
     <FolderNameDialog v-model:open="folderDialogOpen" :busy="creatingFolder" :error="imports.error" @confirm="createFolder" />
+    <AssignCoserDialog v-model:open="assignCoserOpen" :cosers="cosers" :album-title="coserTarget?.title ?? ''" :busy="coserBusy" :error="coserError" @assign="assignAlbumCoser" @create="beginCreateCoser" />
+    <CoserDialog v-model:open="coserDialogOpen" :busy="coserBusy" :error="coserError" @confirm="createAndAssignCoser" />
   </div>
 </template>

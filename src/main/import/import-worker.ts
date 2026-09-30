@@ -7,11 +7,11 @@ import { createReadStream, createWriteStream } from 'node:fs'
 import { copyFile, mkdir, opendir, readdir, rename, rm, stat, lstat } from 'node:fs/promises'
 import { parentPort, workerData } from 'node:worker_threads'
 import { createDatabase } from './database'
-import type { AlbumDetail, AlbumSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportEntryStatus, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, MediaKind, StorageEligibility, TrashItem, TrashOperationResult, TrashSnapshot } from './types'
+import type { AlbumDetail, AlbumSummary, CoserDetail, CoserSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportEntryStatus, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, MediaKind, StorageEligibility, TrashItem, TrashOperationResult, TrashSnapshot } from './types'
 
 type WorkerConfig = { databasePath: string; storagePath: string; deleteSourcesAfterImport?: boolean }
 type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null }
-type Request = { id?: string; command: 'plan' | 'get-jobs' | 'get-job' | 'get-library' | 'get-folder-tree' | 'get-album' | 'get-folder' | 'get-media-path' | 'create-folder' | 'move-media' | 'move-album' | 'get-trash' | 'retry' | 'trash-media' | 'trash-album' | 'trash-folder' | 'restore-media' | 'restore-album' | 'restore-folder' | 'purge-trash' | 'purge-album' | 'purge-folder' | 'purge-all-trash' | 'purge-orphan' | 'set-delete-sources-after-import' | 'source-disposal-result' | 'get-storage-eligibility' | 'export-orphan'; payload?: unknown }
+type Request = { id?: string; command: 'plan' | 'get-jobs' | 'get-job' | 'get-library' | 'get-folder-tree' | 'get-album' | 'get-folder' | 'get-media-path' | 'get-coser-avatar-media' | 'get-coser-avatar-source' | 'create-folder' | 'move-media' | 'move-album' | 'get-cosers' | 'get-coser' | 'create-coser' | 'update-coser' | 'set-coser-avatar' | 'delete-coser' | 'assign-album-coser' | 'unassign-album-coser' | 'get-trash' | 'retry' | 'trash-media' | 'trash-album' | 'trash-folder' | 'restore-media' | 'restore-album' | 'restore-folder' | 'purge-trash' | 'purge-album' | 'purge-folder' | 'purge-all-trash' | 'purge-orphan' | 'set-delete-sources-after-import' | 'source-disposal-result' | 'get-storage-eligibility' | 'export-orphan'; payload?: unknown }
 type ScannedFile = { path: string; relativePath: string; name: string; size: number; modifiedAt: number; kind: MediaKind; albumId: string | null; folderId: string | null; sourceRootPath: string | null; skippedReason?: string }
 type SourceDisposalRequest = { entryId: string; sourcePath: string; sourceRootPath: string | null; sourceSize: number; sourceModifiedAt: number }
 type SourceDisposalResult = { entryId: string; success: boolean; error?: string }
@@ -185,9 +185,10 @@ function getStorageEligibility(): StorageEligibility {
   const mediaCount = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM media_items').get() as { count: number }).count)
   const albumCount = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM albums').get() as { count: number }).count)
   const folderCount = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM folders').get() as { count: number }).count)
+  const coserCount = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM cosers').get() as { count: number }).count)
   const orphanCount = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM storage_orphans').get() as { count: number }).count)
   const pendingJobs = Number((sqlite.prepare("SELECT COUNT(*) AS count FROM import_jobs WHERE status IN ('planned', 'queued', 'running', 'partial_failed', 'interrupted')").get() as { count: number }).count)
-  if (mediaCount || albumCount || folderCount) return { canChangeResourceDirectory: false, reason: '当前图库已有文件夹、媒体或图集，不能直接切换资源目录' }
+  if (mediaCount || albumCount || folderCount || coserCount) return { canChangeResourceDirectory: false, reason: '当前图库已有 Coser、文件夹、媒体或图集，不能直接切换资源目录' }
   if (orphanCount) return { canChangeResourceDirectory: false, reason: '当前图库回收站中仍有未索引对象，不能切换资源目录' }
   if (pendingJobs) return { canChangeResourceDirectory: false, reason: '当前图库存在可恢复的导入任务，不能切换资源目录' }
   return { canChangeResourceDirectory: true, reason: null }
@@ -603,14 +604,14 @@ function getJob(jobId: string): ImportJobDetail {
 }
 function previewUrl(hash: string, status: string): string | null { return status === 'ready' ? `gallery-thumb://${hash}` : null }
 type AlbumSummaryRow = { id: string; title: string; updated_at: number; media_count: number; cover_hash: string | null; cover_status: string | null }
-function getAlbumSummaries(folderId: string | null): AlbumSummary[] {
+function getAlbumSummaries(where: string, parameters: unknown[]): AlbumSummary[] {
   const albums = sqlite.prepare(`SELECT a.id, a.title, a.updated_at, COUNT(m.id) AS media_count,
     (SELECT m.content_hash FROM album_items ai2 JOIN media_items m ON m.id = ai2.media_id
       WHERE ai2.album_id = a.id AND m.media_kind IN ('image', 'video') AND m.trash_state = 'active' ORDER BY ai2.sort_order, ai2.media_id LIMIT 1) AS cover_hash
     , (SELECT m.preview_status FROM album_items ai2 JOIN media_items m ON m.id = ai2.media_id
       WHERE ai2.album_id = a.id AND m.media_kind IN ('image', 'video') AND m.trash_state = 'active' ORDER BY ai2.sort_order, ai2.media_id LIMIT 1) AS cover_status
     FROM albums a LEFT JOIN album_items ai ON ai.album_id = a.id LEFT JOIN media_items m ON m.id = ai.media_id AND m.trash_state = 'active'
-    WHERE a.trash_state = 'active' AND a.folder_id IS ? GROUP BY a.id ORDER BY a.updated_at DESC`).all(folderId) as AlbumSummaryRow[]
+    WHERE a.trash_state = 'active' AND ${where} GROUP BY a.id ORDER BY a.updated_at DESC`).all(...parameters) as AlbumSummaryRow[]
   return albums.map((album) => ({
     id: album.id,
     title: album.title,
@@ -620,10 +621,12 @@ function getAlbumSummaries(folderId: string | null): AlbumSummary[] {
     coverPreviewPending: album.cover_status === 'pending' || album.cover_status === 'generating'
   }))
 }
+function getFolderAlbumSummaries(folderId: string | null): AlbumSummary[] { return getAlbumSummaries('a.folder_id IS ? AND a.coser_id IS NULL', [folderId]) }
+function getCoserAlbumSummaries(coserId: string): AlbumSummary[] { return getAlbumSummaries('a.coser_id = ?', [coserId]) }
 function getFolderSummaries(parentId: string | null): FolderSummary[] {
   const rows = sqlite.prepare(`SELECT f.id, f.title, f.parent_id, f.updated_at,
     (SELECT COUNT(*) FROM folders child WHERE child.parent_id = f.id AND child.trash_state = 'active') AS folder_count,
-    (SELECT COUNT(*) FROM albums a WHERE a.folder_id = f.id AND a.trash_state = 'active') AS album_count,
+    (SELECT COUNT(*) FROM albums a WHERE a.folder_id = f.id AND a.coser_id IS NULL AND a.trash_state = 'active') AS album_count,
     (SELECT COUNT(*) FROM media_items m WHERE m.folder_id = f.id AND m.trash_state = 'active'
       AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = m.id AND a.trash_state = 'active')) AS media_count
     FROM folders f WHERE f.parent_id IS ? AND f.trash_state = 'active' ORDER BY f.updated_at DESC, f.title COLLATE NOCASE`).all(parentId) as Array<{ id: string; title: string; parent_id: string | null; updated_at: number; folder_count: number; album_count: number; media_count: number }>
@@ -632,7 +635,7 @@ function getFolderSummaries(parentId: string | null): FolderSummary[] {
 function getFolderTree(): FolderTreeNode[] {
   const folders = sqlite.prepare(`SELECT f.id, f.title, f.parent_id,
       (SELECT COUNT(*) FROM folders child WHERE child.parent_id = f.id AND child.trash_state = 'active') +
-      (SELECT COUNT(*) FROM albums a WHERE a.folder_id = f.id AND a.trash_state = 'active') +
+      (SELECT COUNT(*) FROM albums a WHERE a.folder_id = f.id AND a.coser_id IS NULL AND a.trash_state = 'active') +
       (SELECT COUNT(*) FROM media_items m WHERE m.folder_id = f.id AND m.trash_state = 'active'
         AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = m.id AND a.trash_state = 'active')) AS item_count
     FROM folders f WHERE f.trash_state = 'active'`).all() as Array<{ id: string; title: string; parent_id: string | null; item_count: number }>
@@ -664,7 +667,111 @@ function getLibrary(): LibrarySnapshot {
   const byKind = new Map(counts.map((row) => [row.media_kind, Number(row.count)]))
   const looseMedia = sqlite.prepare(`SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status, m.preview_error FROM media_items m WHERE m.trash_state = 'active' AND m.folder_id IS NULL AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = m.id AND a.trash_state = 'active') ORDER BY m.imported_at DESC LIMIT 100`).all() as Record<string, unknown>[]
   const images = byKind.get('image') ?? 0; const videos = byKind.get('video') ?? 0; const files = byKind.get('file') ?? 0
-  return { totals: { all: images + videos + files, images, videos, files }, folders: getFolderSummaries(null), albums: getAlbumSummaries(null), looseMedia: looseMedia.map(asMedia) }
+  return { totals: { all: images + videos + files, images, videos, files }, folders: getFolderSummaries(null), albums: getFolderAlbumSummaries(null), looseMedia: looseMedia.map(asMedia) }
+}
+function normalizeCoserName(value: unknown): { value: string; key: string } {
+  const name = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : ''
+  if (!name || name.length > 80) throw new Error('请输入 1 到 80 个字符的 Coser 名称')
+  return { value: name, key: name.toLocaleLowerCase() }
+}
+function normalizeAliases(value: unknown, primaryKey: string): Array<{ value: string; key: string }> {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('别名格式无效')
+  const keys = new Set([primaryKey])
+  return value.map((alias) => normalizeCoserName(alias)).map((alias) => {
+    if (keys.has(alias.key)) throw new Error('别名不能重复或与主名称相同')
+    keys.add(alias.key)
+    return alias
+  })
+}
+function assertCoserNamesAvailable(names: Array<{ key: string }>, excludedId: string | null = null): void {
+  const candidateKeys = names.map((name) => name.key)
+  if (!candidateKeys.length) return
+  const marks = placeholders(candidateKeys)
+  const existing = sqlite.prepare(`SELECT id FROM cosers WHERE name_key IN (${marks}) UNION SELECT coser_id AS id FROM coser_aliases WHERE alias_key IN (${marks})`).all(...candidateKeys, ...candidateKeys) as Array<{ id: string }>
+  if (existing.some((row) => row.id !== excludedId)) throw new Error('名称或别名已被其他 Coser 使用')
+}
+function coserSummary(row: { id: string; name: string; updated_at: number; avatar_updated_at: number | null }): CoserSummary {
+  const aliases = (sqlite.prepare('SELECT alias FROM coser_aliases WHERE coser_id = ? ORDER BY created_at, alias COLLATE NOCASE').all(row.id) as Array<{ alias: string }>).map((alias) => alias.alias)
+  const counts = sqlite.prepare(`SELECT COUNT(DISTINCT a.id) AS album_count, COUNT(m.id) AS media_count
+    FROM albums a LEFT JOIN album_items ai ON ai.album_id = a.id
+    LEFT JOIN media_items m ON m.id = ai.media_id AND m.trash_state = 'active'
+    WHERE a.coser_id = ? AND a.trash_state = 'active'`).get(row.id) as { album_count: number; media_count: number }
+  return { id: row.id, name: row.name, aliases, avatarUrl: row.avatar_updated_at === null ? null : `gallery-coser-avatar://${row.id}?v=${row.avatar_updated_at}`, albumCount: Number(counts.album_count), mediaCount: Number(counts.media_count), updatedAt: Number(row.updated_at) }
+}
+function getCosers(): CoserSummary[] {
+  return (sqlite.prepare('SELECT id, name, updated_at, avatar_updated_at FROM cosers ORDER BY updated_at DESC, name COLLATE NOCASE').all() as Array<{ id: string; name: string; updated_at: number; avatar_updated_at: number | null }>).map(coserSummary)
+}
+function getCoser(coserId: string): CoserDetail {
+  const row = sqlite.prepare('SELECT id, name, updated_at, avatar_updated_at FROM cosers WHERE id = ?').get(coserId) as { id: string; name: string; updated_at: number; avatar_updated_at: number | null } | undefined
+  if (!row) throw new Error('Coser 不存在')
+  return { ...coserSummary(row), albums: getCoserAlbumSummaries(coserId) }
+}
+function getCoserAvatarMedia(coserId: string): LibraryMedia[] {
+  if (!sqlite.prepare('SELECT 1 FROM cosers WHERE id = ?').get(coserId)) throw new Error('Coser 不存在')
+  const media = sqlite.prepare(`SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status, m.preview_error
+    FROM albums a JOIN album_items ai ON ai.album_id = a.id JOIN media_items m ON m.id = ai.media_id
+    WHERE a.coser_id = ? AND a.trash_state = 'active' AND m.trash_state = 'active' AND m.media_kind = 'image'
+    ORDER BY a.updated_at DESC, ai.sort_order, m.imported_at DESC`).all(coserId) as Record<string, unknown>[]
+  return media.map(asMedia)
+}
+function setCoserAvatar(payload: unknown): void {
+  const data = payload as { id?: unknown; updatedAt?: unknown }
+  const id = typeof data?.id === 'string' ? data.id : ''
+  const updatedAt = data?.updatedAt === null ? null : Number(data?.updatedAt)
+  if (updatedAt !== null && (!Number.isSafeInteger(updatedAt) || updatedAt <= 0)) throw new Error('头像版本无效')
+  if (!sqlite.prepare('UPDATE cosers SET avatar_updated_at = ?, updated_at = ? WHERE id = ?').run(updatedAt, Date.now(), id).changes) throw new Error('Coser 不存在')
+}
+function createCoser(payload: unknown): CoserSummary {
+  const data = payload as { name?: unknown; aliases?: unknown }
+  const name = normalizeCoserName(data?.name)
+  const aliases = normalizeAliases(data?.aliases, name.key)
+  assertCoserNamesAvailable([name, ...aliases])
+  const id = randomUUID(); const now = Date.now()
+  sqlite.transaction(() => {
+    sqlite.prepare('INSERT INTO cosers (id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(id, name.value, name.key, now, now)
+    const insertAlias = sqlite.prepare('INSERT INTO coser_aliases (id, coser_id, alias, alias_key, created_at) VALUES (?, ?, ?, ?, ?)')
+    aliases.forEach((alias) => insertAlias.run(randomUUID(), id, alias.value, alias.key, now))
+  })()
+  return getCoser(id)
+}
+function updateCoser(payload: unknown): CoserSummary {
+  const data = payload as { id?: unknown; name?: unknown; aliases?: unknown }
+  const id = typeof data?.id === 'string' ? data.id : ''
+  if (!sqlite.prepare('SELECT 1 FROM cosers WHERE id = ?').get(id)) throw new Error('Coser 不存在')
+  const name = normalizeCoserName(data.name)
+  const aliases = normalizeAliases(data.aliases, name.key)
+  assertCoserNamesAvailable([name, ...aliases], id)
+  const now = Date.now()
+  sqlite.transaction(() => {
+    sqlite.prepare('UPDATE cosers SET name = ?, name_key = ?, updated_at = ? WHERE id = ?').run(name.value, name.key, now, id)
+    sqlite.prepare('DELETE FROM coser_aliases WHERE coser_id = ?').run(id)
+    const insertAlias = sqlite.prepare('INSERT INTO coser_aliases (id, coser_id, alias, alias_key, created_at) VALUES (?, ?, ?, ?, ?)')
+    aliases.forEach((alias) => insertAlias.run(randomUUID(), id, alias.value, alias.key, now))
+  })()
+  return getCoser(id)
+}
+function deleteCoser(coserId: string): void {
+  const now = Date.now()
+  sqlite.transaction(() => {
+    if (!sqlite.prepare('SELECT 1 FROM cosers WHERE id = ?').get(coserId)) throw new Error('Coser 不存在')
+    sqlite.prepare('UPDATE albums SET coser_id = NULL, updated_at = ? WHERE coser_id = ?').run(now, coserId)
+    sqlite.prepare('DELETE FROM cosers WHERE id = ?').run(coserId)
+  })()
+}
+function assignAlbumCoser(payload: unknown): void {
+  const data = payload as { albumId?: unknown; coserId?: unknown }
+  const albumId = typeof data?.albumId === 'string' ? data.albumId : ''
+  const coserId = typeof data?.coserId === 'string' ? data.coserId : ''
+  if (!sqlite.prepare('SELECT 1 FROM cosers WHERE id = ?').get(coserId)) throw new Error('目标 Coser 不存在')
+  const now = Date.now()
+  sqlite.transaction(() => {
+    if (!sqlite.prepare("UPDATE albums SET coser_id = ?, folder_id = NULL, updated_at = ? WHERE id = ? AND trash_state = 'active'").run(coserId, now, albumId).changes) throw new Error('图集不存在或已在回收站')
+    sqlite.prepare('UPDATE cosers SET updated_at = ? WHERE id = ?').run(now, coserId)
+  })()
+}
+function unassignAlbumCoser(albumId: string): void {
+  if (!sqlite.prepare("UPDATE albums SET coser_id = NULL, updated_at = ? WHERE id = ? AND coser_id IS NOT NULL AND trash_state = 'active'").run(Date.now(), albumId).changes) throw new Error('图集不存在、未归入 Coser 或已在回收站')
 }
 function createFolder(payload: unknown): FolderSummary {
   const { title, parentId } = payload as { title: string; parentId: string | null }
@@ -687,7 +794,7 @@ function moveAlbum(payload: unknown): void {
   const { albumId, folderId } = payload as { albumId: string; folderId: string | null }
   const target = folderId === null ? null : String(folderId)
   if (target && !sqlite.prepare("SELECT 1 FROM folders WHERE id = ? AND trash_state = 'active'").get(target)) throw new Error('目标文件夹不存在或已在回收站')
-  const changed = sqlite.prepare("UPDATE albums SET folder_id = ?, updated_at = ? WHERE id = ? AND trash_state = 'active'").run(target, Date.now(), String(albumId))
+  const changed = sqlite.prepare("UPDATE albums SET folder_id = ?, coser_id = NULL, updated_at = ? WHERE id = ? AND trash_state = 'active'").run(target, Date.now(), String(albumId))
   if (!changed.changes) throw new Error('图集不存在或已在回收站')
 }
 function moveMedia(payload: unknown): void {
@@ -708,7 +815,7 @@ function getFolder(folderId: string): FolderDetail {
     WHERE folder_id = ? AND trash_state = 'active'
       AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = media_items.id AND a.trash_state = 'active')
     ORDER BY imported_at DESC`).all(folderId) as Record<string, unknown>[]
-  return { id: folder.id, title: folder.title, parentId: folder.parent_id, updatedAt: Number(folder.updated_at), folderCount: getFolderSummaries(folderId).length, albumCount: getAlbumSummaries(folderId).length, mediaCount: media.length, breadcrumbs, folders: getFolderSummaries(folderId), albums: getAlbumSummaries(folderId), media: media.map(asMedia) }
+  return { id: folder.id, title: folder.title, parentId: folder.parent_id, updatedAt: Number(folder.updated_at), folderCount: getFolderSummaries(folderId).length, albumCount: getFolderAlbumSummaries(folderId).length, mediaCount: media.length, breadcrumbs, folders: getFolderSummaries(folderId), albums: getFolderAlbumSummaries(folderId), media: media.map(asMedia) }
 }
 function getAlbum(albumId: string): AlbumDetail {
   const album = sqlite.prepare("SELECT id, title, folder_id, updated_at FROM albums WHERE id = ? AND trash_state = 'active'").get(albumId) as { id: string; title: string; folder_id: string | null; updated_at: number } | undefined
@@ -719,8 +826,20 @@ function getAlbum(albumId: string): AlbumDetail {
 function getMediaPath(mediaId: string): string {
   const media = sqlite.prepare("SELECT object_path FROM media_items WHERE id = ? AND trash_state = 'active'").get(mediaId) as { object_path: string } | undefined
   if (!media) throw new Error('媒体不存在或不可查看')
+  return validatedMediaPath(media.object_path)
+}
+function getCoserAvatarSource(payload: unknown): string {
+  const data = payload as { coserId?: unknown; mediaId?: unknown }
+  const coserId = typeof data?.coserId === 'string' ? data.coserId : ''
+  const mediaId = typeof data?.mediaId === 'string' ? data.mediaId : ''
+  const media = sqlite.prepare(`SELECT m.object_path FROM albums a JOIN album_items ai ON ai.album_id = a.id JOIN media_items m ON m.id = ai.media_id
+    WHERE a.coser_id = ? AND a.trash_state = 'active' AND m.id = ? AND m.trash_state = 'active' AND m.media_kind = 'image'`).get(coserId, mediaId) as { object_path: string } | undefined
+  if (!media) throw new Error('头像来源不是当前 Coser 图包中的可用图片')
+  return validatedMediaPath(media.object_path)
+}
+function validatedMediaPath(objectPathValue: string): string {
   const objectsRoot = resolve(config.storagePath, 'objects')
-  const objectPath = resolve(media.object_path)
+  const objectPath = resolve(objectPathValue)
   const relation = relative(objectsRoot, objectPath)
   if (!relation || relation.startsWith('..') || /^[\\/]/.test(relation)) throw new Error('媒体不存在或不可查看')
   return objectPath
@@ -811,10 +930,20 @@ parent.on('message', (request: Request) => {
       else if (request.command === 'get-folder-tree') reply(request.id, getFolderTree())
       else if (request.command === 'get-album') reply(request.id, getAlbum(String(request.payload)))
       else if (request.command === 'get-media-path') reply(request.id, getMediaPath(String(request.payload)))
+      else if (request.command === 'get-coser-avatar-media') reply(request.id, getCoserAvatarMedia(String(request.payload)))
+      else if (request.command === 'get-coser-avatar-source') reply(request.id, getCoserAvatarSource(request.payload))
       else if (request.command === 'get-folder') reply(request.id, getFolder(String(request.payload)))
       else if (request.command === 'create-folder') reply(request.id, createFolder(request.payload))
       else if (request.command === 'move-media') { moveMedia(request.payload); reply(request.id, true) }
       else if (request.command === 'move-album') { moveAlbum(request.payload); reply(request.id, true) }
+      else if (request.command === 'get-cosers') reply(request.id, getCosers())
+      else if (request.command === 'get-coser') reply(request.id, getCoser(String(request.payload)))
+      else if (request.command === 'create-coser') reply(request.id, createCoser(request.payload))
+      else if (request.command === 'update-coser') reply(request.id, updateCoser(request.payload))
+      else if (request.command === 'set-coser-avatar') { setCoserAvatar(request.payload); reply(request.id, true) }
+      else if (request.command === 'delete-coser') { deleteCoser(String(request.payload)); reply(request.id, true) }
+      else if (request.command === 'assign-album-coser') { assignAlbumCoser(request.payload); reply(request.id, true) }
+      else if (request.command === 'unassign-album-coser') { unassignAlbumCoser(String(request.payload)); reply(request.id, true) }
       else if (request.command === 'get-trash') reply(request.id, getTrash())
       else if (request.command === 'get-storage-eligibility') reply(request.id, getStorageEligibility())
       else if (request.command === 'export-orphan') reply(request.id, await exportOrphan(request.payload))

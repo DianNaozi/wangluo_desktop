@@ -9,6 +9,9 @@ export type AlbumDetail = { id: string; title: string; folderId: string | null; 
 export type FolderSummary = { id: string; title: string; parentId: string | null; updatedAt: number; folderCount: number; albumCount: number; mediaCount: number }
 export type FolderTreeNode = { id: string; title: string; parentId: string | null; itemCount: number; children: FolderTreeNode[] }
 export type AlbumSummary = { id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null; coverPreviewPending: boolean }
+export type CoserSummary = { id: string; name: string; aliases: string[]; avatarUrl: string | null; albumCount: number; mediaCount: number; updatedAt: number }
+export type CoserDetail = CoserSummary & { albums: AlbumSummary[] }
+export type AvatarCrop = { left: number; top: number; size: number }
 export type FolderDetail = FolderSummary & { breadcrumbs: Array<{ id: string; title: string }>; folders: FolderSummary[]; albums: AlbumSummary[]; media: LibraryMedia[] }
 export type TrashItem = { entityType: 'media' | 'album' | 'folder' | 'orphan'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number; state: 'trashed' | 'pending_trash' | 'pending_restore'; failureReason: string | null }
 export type TrashSnapshot = { items: TrashItem[] }
@@ -69,6 +72,16 @@ const api = {
     createFolder: (title: string, parentId: string | null): Promise<FolderSummary> => ipcRenderer.invoke('media:create-folder', title, parentId),
     moveMedia: (mediaId: string, folderId: string | null): Promise<void> => ipcRenderer.invoke('media:move-media', mediaId, folderId),
     moveAlbum: (albumId: string, folderId: string | null): Promise<void> => ipcRenderer.invoke('media:move-album', albumId, folderId),
+    getCosers: (): Promise<CoserSummary[]> => ipcRenderer.invoke('media:get-cosers'),
+    getCoser: (id: string): Promise<CoserDetail> => ipcRenderer.invoke('media:get-coser', id),
+    createCoser: (name: string, aliases: string[]): Promise<CoserSummary> => ipcRenderer.invoke('media:create-coser', { name, aliases }),
+    updateCoser: (id: string, name: string, aliases: string[]): Promise<CoserSummary> => ipcRenderer.invoke('media:update-coser', { id, name, aliases }),
+    deleteCoser: (id: string): Promise<void> => ipcRenderer.invoke('media:delete-coser', id),
+    assignAlbumCoser: (albumId: string, coserId: string): Promise<void> => ipcRenderer.invoke('media:assign-album-coser', { albumId, coserId }),
+    unassignAlbumCoser: (albumId: string): Promise<void> => ipcRenderer.invoke('media:unassign-album-coser', albumId),
+    getCoserAvatarMedia: (coserId: string): Promise<LibraryMedia[]> => ipcRenderer.invoke('media:get-coser-avatar-media', coserId),
+    saveCoserAvatar: (coserId: string, mediaId: string, crop: AvatarCrop): Promise<void> => ipcRenderer.invoke('coser:save-avatar', { coserId, mediaId, crop }),
+    clearCoserAvatar: (coserId: string): Promise<void> => ipcRenderer.invoke('coser:clear-avatar', coserId),
     getTrash: (): Promise<TrashSnapshot> => ipcRenderer.invoke('media:get-trash')
   },
   settings: {

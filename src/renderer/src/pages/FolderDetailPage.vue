@@ -6,6 +6,8 @@ import AlbumCard from '@/components/albums/AlbumCard.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import AssignCoserDialog from '@/components/cosers/AssignCoserDialog.vue'
+import CoserDialog from '@/components/cosers/CoserDialog.vue'
 import FolderNameDialog from '@/components/folders/FolderNameDialog.vue'
 import MediaThumbnail from '@/components/media/MediaThumbnail.vue'
 import MediaViewer from '@/components/media/MediaViewer.vue'
@@ -23,6 +25,8 @@ const dragging = ref<{ kind: 'album' | 'media'; id: string } | null>(null)
 const viewerMediaId = ref<string | null>(null)
 const folderDialogOpen = ref(false)
 const creatingFolder = ref(false)
+const assignCoserOpen = ref(false); const coserDialogOpen = ref(false); const coserBusy = ref(false); const coserError = ref('')
+const cosers = ref<CoserSummary[]>([]); const coserTarget = ref<{ id: string; title: string } | null>(null)
 const sortedFolders = computed(() => folder.value ? sortFolderContent(folder.value.folders, library.folderChildrenSortOrder) : [])
 const sortedAlbums = computed(() => folder.value ? sortFolderContent(folder.value.albums, library.folderAlbumsSortOrder) : [])
 const sortedMedia = computed(() => folder.value ? sortMedia(folder.value.media, library.librarySortOrder) : [])
@@ -71,6 +75,25 @@ function openMediaCard(event: MouseEvent): void {
   const media = sortedMedia.value.find((item) => card?.textContent?.includes(item.originalName))
   if (media) viewerMediaId.value = media.id
 }
+async function openAssignCoser(id: string, title: string): Promise<void> {
+  coserTarget.value = { id, title }; coserError.value = ''
+  try { cosers.value = await window.api.library.getCosers(); assignCoserOpen.value = true } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
+}
+async function assignAlbumCoser(coserId: string): Promise<void> {
+  if (!coserTarget.value || coserBusy.value) return
+  coserBusy.value = true
+  try { await window.api.library.assignAlbumCoser(coserTarget.value.id, coserId); assignCoserOpen.value = false; coserTarget.value = null; await load(); await imports.refresh() }
+  catch (reason) { coserError.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { coserBusy.value = false }
+}
+function beginCreateCoser(): void { assignCoserOpen.value = false; coserDialogOpen.value = true; coserError.value = '' }
+async function createAndAssignCoser(value: { name: string; aliases: string[] }): Promise<void> {
+  if (!coserTarget.value || coserBusy.value) return
+  coserBusy.value = true
+  try { const coser = await window.api.library.createCoser(value.name, value.aliases); cosers.value = [...cosers.value, coser]; await window.api.library.assignAlbumCoser(coserTarget.value.id, coser.id); coserDialogOpen.value = false; coserTarget.value = null; await load(); await imports.refresh() }
+  catch (reason) { coserError.value = reason instanceof Error ? reason.message : String(reason) }
+  finally { coserBusy.value = false }
+}
 onMounted(() => { void load(); document.addEventListener('click', openMediaCard) }); onBeforeUnmount(() => document.removeEventListener('click', openMediaCard)); watch(() => route.params.id, () => { void load() }); watch(() => imports.completedImportRevision, () => { void load() }); watch(() => imports.previewRevision, () => { void load() })
 </script>
 
@@ -91,7 +114,7 @@ onMounted(() => { void load(); document.addEventListener('click', openMediaCard)
 
       <section v-if="sortedAlbums.length" class="mt-6">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 class="font-semibold text-foreground">图集</h3><label class="flex items-center gap-2 text-sm text-muted">排序<select v-model="library.folderAlbumsSortOrder" class="rounded-md border border-line bg-surface px-2 py-1 text-foreground"><option value="title">名称（A → Z）</option><option value="updatedAt">最近更新</option></select></label></div>
-        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5"><AlbumCard v-for="album in sortedAlbums" :key="album.id" :album="album" :preview-unavailable="unavailablePreviews.has(album.id)" :subtitle="`${dateText(album.updatedAt)} 更新`" @open="router.push(`/albums/${album.id}`)" @queue="addAlbumToQueue(album.id, album.title)" @delete="trashAlbum(album.id, album.title)" @dragstart="beginDrag('album', album.id)" @preview-error="hidePreview(album.id)"><template #footer><button class="shrink-0 text-xs text-muted hover:text-foreground" @click.stop="moveToRoot('album', album.id)">移至根目录</button></template></AlbumCard></div>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"><AlbumCard v-for="album in sortedAlbums" :key="album.id" :album="album" :preview-unavailable="unavailablePreviews.has(album.id)" :subtitle="`${dateText(album.updatedAt)} 更新`" can-assign-coser @open="router.push(`/albums/${album.id}`)" @queue="addAlbumToQueue(album.id, album.title)" @assign-coser="openAssignCoser(album.id, album.title)" @delete="trashAlbum(album.id, album.title)" @dragstart="beginDrag('album', album.id)" @preview-error="hidePreview(album.id)"><template #footer><button class="shrink-0 text-xs text-muted hover:text-foreground" @click.stop="moveToRoot('album', album.id)">移至根目录</button></template></AlbumCard></div>
       </section>
 
       <section v-if="sortedMedia.length" class="mt-6"><div class="mb-3 flex items-center justify-between"><h3 class="font-semibold text-foreground">文件夹内媒体</h3><label class="flex items-center gap-2 text-sm text-muted">排序<select v-model="library.librarySortOrder" class="rounded-md border border-line bg-surface px-2 py-1 text-foreground"><option value="filename">名称（A → Z）</option><option value="importedAt">导入时间（最新优先）</option></select></label></div><div class="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5"><article v-for="media in sortedMedia" :key="media.id" draggable="true" class="rounded-lg border border-line bg-surface p-3" @dragstart="beginDrag('media', media.id)"><MediaThumbnail :media="media" :preview-unavailable="unavailablePreviews.has(media.id)" class="aspect-[4/3] rounded-md" @preview-error="hidePreview(media.id)" @retry="retryPreview(media.id)" /><div class="mt-2 flex items-center justify-between gap-2"><span class="min-w-0 truncate text-sm font-medium text-foreground">{{ media.originalName }}</span><button class="shrink-0 text-xs text-muted hover:text-foreground" @click="moveToRoot('media', media.id)">移至根目录</button></div></article></div></section>
@@ -101,4 +124,6 @@ onMounted(() => { void load(); document.addEventListener('click', openMediaCard)
   <MediaViewer :open="Boolean(viewerMediaId)" :media="sortedMedia" :active-id="viewerMediaId" @close="viewerMediaId = null" @update:active-id="viewerMediaId = $event" />
   <ConfirmDialog :open="Boolean(trashTarget)" title="移入回收站" :description="trashTarget ? `将图集“${trashTarget.name}”及其全部媒体移入回收站？原始导入来源文件不会被删除。` : ''" confirm-text="移入回收站" @update:open="(open) => { if (!open) trashTarget = null }" @confirm="confirmTrashAlbum" />
   <FolderNameDialog v-model:open="folderDialogOpen" title="新建子文件夹" description="子文件夹最多可创建一层。" :busy="creatingFolder" :error="error" @confirm="createFolder" />
+  <AssignCoserDialog v-model:open="assignCoserOpen" :cosers="cosers" :album-title="coserTarget?.title ?? ''" :busy="coserBusy" :error="coserError" @assign="assignAlbumCoser" @create="beginCreateCoser" />
+  <CoserDialog v-model:open="coserDialogOpen" :busy="coserBusy" :error="coserError" @confirm="createAndAssignCoser" />
 </template>
