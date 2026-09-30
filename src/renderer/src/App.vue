@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { Archive, BarChart3, ChevronLeft, ChevronRight, HardDrive, Image, Layers3, Moon, Search, Settings, Sun, Tag, UserRound, Clock3 } from 'lucide-vue-next'
+import { Archive, BarChart3, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, HardDrive, Image, Layers3, LoaderCircle, Moon, Search, Settings, Sun, Tag, UserRound, Clock3 } from 'lucide-vue-next'
 import Input from '@/components/ui/Input.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { useAppStore } from '@/stores/app'
 import { useLibraryStore } from '@/stores/library'
 import { useImportStore } from '@/stores/imports'
 import PlaybackController from '@/components/playback/PlaybackController.vue'
+import FolderTree from '@/components/folders/FolderTree.vue'
+import { importProgress } from '@/utils/import-feedback'
 
 const app = useAppStore()
 const library = useLibraryStore()
@@ -30,6 +32,7 @@ const navigation = [
 ]
 const title = computed(() => String(route.meta.title ?? '幻视图库'))
 const showGlobalSearch = computed(() => route.name === 'home' || route.name === 'library')
+const showFolderTree = computed(() => route.name === 'library' || route.name === 'folder-detail')
 
 function startResize(event: PointerEvent): void {
   if (app.sidebarCollapsed) return
@@ -71,8 +74,17 @@ function startResize(event: PointerEvent): void {
         <div class="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize" @pointerdown="startResize"><span class="absolute inset-y-0 left-1/2 w-px bg-transparent hover:bg-violet-400" /></div>
       </aside>
 
-      <main class="flex min-w-0 flex-1 flex-col"><section class="min-h-0 flex-1 overflow-auto"><RouterView /></section><footer class="flex h-9 shrink-0 items-center justify-between border-t border-line px-5 text-xs text-muted"><span>原文件从不移动或删除</span><span>桌面端 v{{ appVersion }}</span></footer></main>
+      <main class="flex min-w-0 flex-1 flex-col"><section :class="['min-h-0 flex-1', showFolderTree ? 'overflow-hidden' : 'overflow-auto']"><div v-if="showFolderTree" class="flex h-full min-w-0"><FolderTree /><div class="min-w-0 flex-1 overflow-auto"><RouterView /></div></div><RouterView v-else /></section><footer class="flex h-9 shrink-0 items-center justify-between border-t border-line px-5 text-xs text-muted"><span>原文件从不移动或删除</span><span>桌面端 v{{ appVersion }}</span></footer></main>
     </div>
-    <div class="absolute bottom-12 right-5 flex max-w-[360px] items-center gap-3 rounded-xl border border-line bg-surface-raised px-3 py-2 text-xs text-muted shadow-2xl"><span class="size-2 shrink-0 rounded-full" :class="imports.activeJobs.length ? 'animate-pulse bg-violet-500' : 'bg-emerald-400'"></span><span class="truncate">后台导入：{{ imports.activeJobs.length ? `${imports.activeJobs.length} 个任务处理中` : '等待导入文件或文件夹' }}</span></div>
+    <div class="absolute bottom-12 right-5 z-50 flex w-[min(360px,calc(100vw-2.5rem))] flex-col-reverse gap-3" aria-live="polite">
+      <section v-if="imports.activeJob" class="rounded-xl border border-line bg-surface-raised p-3.5 text-xs text-muted shadow-2xl">
+        <div class="flex items-center gap-2"><LoaderCircle class="shrink-0 animate-spin text-violet-500" :size="17" /><div class="min-w-0 flex-1"><div class="flex items-center justify-between gap-3"><p class="font-medium text-foreground">{{ imports.activeJob.status === 'running' ? '正在导入媒体' : '等待导入开始' }}</p><span class="shrink-0 text-violet-600 dark:text-violet-300">{{ importProgress(imports.activeJob) }}%</span></div><p class="mt-1">已处理 {{ Math.min(imports.activeJob.totalEntries, imports.activeJob.processedEntries + imports.activeJob.skippedEntries) }} / {{ imports.activeJob.totalEntries }} 项<span v-if="imports.queuedJobCount"> · 另有 {{ imports.queuedJobCount }} 个任务排队</span></p></div></div>
+        <div class="mt-2.5 h-1.5 overflow-hidden rounded-full bg-line"><div class="h-full rounded-full bg-violet-500 transition-[width] duration-200" :style="{ width: `${importProgress(imports.activeJob)}%` }" /></div>
+        <p class="mt-2 text-[11px]">新增 {{ imports.activeJob.importedEntries }} · 去重 {{ imports.activeJob.duplicateEntries }}<span v-if="imports.activeJob.failedEntries"> · 失败 {{ imports.activeJob.failedEntries }}</span></p>
+      </section>
+      <section v-for="notice in imports.completionNotices" :key="notice.id" :class="['rounded-xl border p-3.5 text-xs shadow-2xl', notice.tone === 'success' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200' : 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-100']">
+        <div class="flex items-start gap-2"><CheckCircle2 v-if="notice.tone === 'success'" class="mt-0.5 shrink-0" :size="17" /><CircleAlert v-else class="mt-0.5 shrink-0" :size="17" /><div class="min-w-0"><p class="font-medium">{{ notice.title }}</p><p class="mt-1 leading-5 opacity-85">{{ notice.detail }}</p></div></div>
+      </section>
+    </div>
   </div>
 </template>

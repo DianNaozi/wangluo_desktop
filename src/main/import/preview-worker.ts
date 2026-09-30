@@ -10,7 +10,7 @@ import type { PreviewProgressEvent } from './types'
 import { runBoundedProcess } from './process-runner'
 
 type WorkerConfig = { databasePath: string; storagePath: string }
-type Request = { id: string; command: 'rebuild' | 'wake' }
+type Request = { id: string; command: 'rebuild' | 'retry' | 'wake'; payload?: unknown }
 type PreviewRow = { id: string; content_hash: string; media_kind: 'image' | 'video'; object_path: string }
 
 const config = workerData as WorkerConfig
@@ -45,23 +45,27 @@ function claimNext(): PreviewRow | undefined {
     return changed.changes ? candidate : undefined
   })()
 }
-async function getDuration(input: string): Promise<number | null> {
+type DurationProbe = { duration: number | null; error: string | null }
+function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+async function getDuration(input: string): Promise<DurationProbe> {
   try {
     const { stdout: output } = await runBoundedProcess(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', input], { timeoutMs: FFPROBE_TIMEOUT_MS, maxOutputBytes: MAX_PROCESS_OUTPUT_BYTES })
     const duration = Number.parseFloat(output.trim())
-    return Number.isFinite(duration) && duration > 0 ? duration : null
-  } catch { return null }
+    return { duration: Number.isFinite(duration) && duration > 0 ? duration : null, error: null }
+  } catch (error) { return { duration: null, error: errorMessage(error) } }
 }
 async function createVideoPreview(input: string, output: string): Promise<void> {
-  const duration = await getDuration(input)
-  const offset = duration ? Math.max(0, Math.min(duration * 0.1, Math.max(0, duration - 0.05))) : 0
+  const probe = await getDuration(input)
+  const offset = probe.duration ? Math.max(0, Math.min(probe.duration * 0.1, Math.max(0, probe.duration - 0.05))) : 0
   const writeFrame = async (at: number): Promise<void> => {
     await runBoundedProcess(ffmpegExecutable, ['-y', '-ss', String(at), '-i', input, '-frames:v', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease', '-c:v', 'libwebp', '-q:v', '82', output], { timeoutMs: FFMPEG_TIMEOUT_MS, maxOutputBytes: MAX_PROCESS_OUTPUT_BYTES })
   }
   try { await writeFrame(offset) } catch (error) {
-    if (offset <= 0) throw error
+    if (offset <= 0) throw new Error(`${probe.error ? `FFprobe：${probe.error}\n` : ''}FFmpeg：${errorMessage(error)}`)
     await rm(output, { force: true })
-    await writeFrame(0)
+    try { await writeFrame(0) } catch (fallbackError) {
+      throw new Error(`${probe.error ? `FFprobe：${probe.error}\n` : ''}FFmpeg（${offset.toFixed(2)} 秒）：${errorMessage(error)}\nFFmpeg（首帧回退）：${errorMessage(fallbackError)}`)
+    }
   }
 }
 async function generate(row: PreviewRow): Promise<void> {
@@ -85,7 +89,7 @@ async function generate(row: PreviewRow): Promise<void> {
     publish({ mediaId: row.id, status: 'ready' })
   } catch (error) {
     await rm(temporary, { force: true })
-    const message = error instanceof Error ? error.message : String(error)
+    const message = errorMessage(error)
     sqlite.prepare("UPDATE media_items SET preview_status = 'failed', preview_error = ?, preview_updated_at = ? WHERE id = ? AND trash_state = 'active'").run(message.slice(0, 2000), Date.now(), row.id)
     publish({ mediaId: row.id, status: 'failed' })
   }
@@ -93,6 +97,13 @@ async function generate(row: PreviewRow): Promise<void> {
 function schedule(delay = 1000): void {
   if (scheduled) return
   scheduled = setTimeout(() => { scheduled = undefined; void pump() }, delay)
+}
+function wake(): void {
+  if (scheduled) {
+    clearTimeout(scheduled)
+    scheduled = undefined
+  }
+  schedule(0)
 }
 async function pump(): Promise<void> {
   if (pumping) return
@@ -110,11 +121,26 @@ function rebuild(): number {
   schedule(0)
   return result.changes
 }
+async function retry(mediaId: unknown): Promise<boolean> {
+  if (typeof mediaId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(mediaId)) throw new Error('媒体标识无效')
+  const row = sqlite.prepare("SELECT content_hash FROM media_items WHERE id = ? AND trash_state = 'active' AND media_kind IN ('image', 'video') AND preview_status IN ('failed', 'ready')").get(mediaId) as { content_hash: string } | undefined
+  if (!row) return false
+  await rm(join(thumbnailDirectory, `${row.content_hash}.webp`), { force: true })
+  const result = sqlite.prepare("UPDATE media_items SET preview_status = 'pending', preview_error = NULL, preview_priority = 0 WHERE id = ? AND trash_state = 'active' AND media_kind IN ('image', 'video') AND preview_status IN ('failed', 'ready')").run(mediaId)
+  if (result.changes) {
+    publish({ mediaId, status: 'pending' })
+    wake()
+  }
+  return result.changes > 0
+}
 
-parent.on('message', (request: Request) => {
+async function handleRequest(request: Request): Promise<void> {
   try {
     if (request.command === 'rebuild') reply(request.id, rebuild())
-    else if (request.command === 'wake') { schedule(0); reply(request.id, true) }
+    else if (request.command === 'retry') reply(request.id, await retry(request.payload))
+    else if (request.command === 'wake') { wake(); reply(request.id, true) }
   } catch (error) { replyError(request.id, error) }
-})
+}
+
+parent.on('message', (request: Request) => { void handleRequest(request) })
 schedule(0)

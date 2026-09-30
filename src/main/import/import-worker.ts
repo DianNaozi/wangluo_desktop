@@ -7,11 +7,11 @@ import { createReadStream, createWriteStream } from 'node:fs'
 import { copyFile, mkdir, opendir, readdir, rename, rm, stat, lstat } from 'node:fs/promises'
 import { parentPort, workerData } from 'node:worker_threads'
 import { createDatabase } from './database'
-import type { AlbumDetail, FolderDetail, FolderSummary, ImportEntryStatus, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, MediaKind, StorageEligibility, TrashItem, TrashOperationResult, TrashSnapshot } from './types'
+import type { AlbumDetail, AlbumSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportEntryStatus, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, MediaKind, StorageEligibility, TrashItem, TrashOperationResult, TrashSnapshot } from './types'
 
 type WorkerConfig = { databasePath: string; storagePath: string; deleteSourcesAfterImport?: boolean }
 type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null }
-type Request = { id?: string; command: 'plan' | 'get-jobs' | 'get-job' | 'get-library' | 'get-album' | 'get-folder' | 'get-media-path' | 'create-folder' | 'move-media' | 'move-album' | 'get-trash' | 'retry' | 'trash-media' | 'trash-album' | 'trash-folder' | 'restore-media' | 'restore-album' | 'restore-folder' | 'purge-trash' | 'purge-album' | 'purge-folder' | 'purge-all-trash' | 'purge-orphan' | 'set-delete-sources-after-import' | 'source-disposal-result' | 'get-storage-eligibility' | 'export-orphan'; payload?: unknown }
+type Request = { id?: string; command: 'plan' | 'get-jobs' | 'get-job' | 'get-library' | 'get-folder-tree' | 'get-album' | 'get-folder' | 'get-media-path' | 'create-folder' | 'move-media' | 'move-album' | 'get-trash' | 'retry' | 'trash-media' | 'trash-album' | 'trash-folder' | 'restore-media' | 'restore-album' | 'restore-folder' | 'purge-trash' | 'purge-album' | 'purge-folder' | 'purge-all-trash' | 'purge-orphan' | 'set-delete-sources-after-import' | 'source-disposal-result' | 'get-storage-eligibility' | 'export-orphan'; payload?: unknown }
 type ScannedFile = { path: string; relativePath: string; name: string; size: number; modifiedAt: number; kind: MediaKind; albumId: string | null; folderId: string | null; sourceRootPath: string | null; skippedReason?: string }
 type SourceDisposalRequest = { entryId: string; sourcePath: string; sourceRootPath: string | null; sourceSize: number; sourceModifiedAt: number }
 type SourceDisposalResult = { entryId: string; success: boolean; error?: string }
@@ -146,8 +146,8 @@ async function planImport(sources: Source[]): Promise<ImportJobSummary> {
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0)
   const insert = sqlite.transaction(() => {
     sqlite.prepare(`INSERT INTO import_jobs (id, source_kind, status, total_entries, total_bytes, created_at, queued_at, delete_sources_after_import) VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)`).run(jobId, sourceKind, files.length, totalBytes, now, now, deleteSourcesAfterImport ? 1 : 0)
-    const albumInsert = sqlite.prepare('INSERT INTO albums (id, title, folder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-    albums.forEach((album) => albumInsert.run(album.id, album.title, album.folderId, now, now))
+    const albumInsert = sqlite.prepare('INSERT INTO albums (id, title, folder_id, created_at, updated_at) VALUES (@id, @title, @folderId, @createdAt, @updatedAt)')
+    albums.forEach((album) => albumInsert.run({ id: album.id, title: album.title, folderId: album.folderId ?? null, createdAt: now, updatedAt: now }))
     const entryInsert = sqlite.prepare(`INSERT INTO import_entries (id, job_id, source_path, relative_path, source_name, source_size, source_modified_at, media_kind, album_id, target_folder_id, status, error_code, error_message, created_at, completed_at, source_root_path, source_cleanup_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     files.forEach((file) => {
       const skipped = Boolean(file.skippedReason)
@@ -260,7 +260,16 @@ async function moveIfPresent(source: string, destination: string): Promise<void>
 function asMedia(row: Record<string, unknown>): LibraryMedia {
   const status = String(row.preview_status)
   const id = String(row.id)
-  return { id, originalName: String(row.original_name), mediaKind: String(row.media_kind) as MediaKind, importedAt: Number(row.imported_at), previewUrl: previewUrl(String(row.content_hash), status), mediaUrl: `gallery-media://${id}`, previewStatus: status as LibraryMedia['previewStatus'] }
+  return {
+    id,
+    originalName: String(row.original_name),
+    mediaKind: String(row.media_kind) as MediaKind,
+    importedAt: Number(row.imported_at),
+    previewUrl: previewUrl(String(row.content_hash), status),
+    mediaUrl: `gallery-media://${id}`,
+    previewStatus: status as LibraryMedia['previewStatus'],
+    previewError: row.preview_error === null || row.preview_error === undefined ? null : String(row.preview_error)
+  }
 }
 async function moveMediaToTrash(row: Record<string, unknown>): Promise<void> {
   const hash = String(row.content_hash); const extension = String(row.extension)
@@ -593,14 +602,23 @@ function getJob(jobId: string): ImportJobDetail {
   return { ...job, entries: entries.map((entry) => ({ id: String(entry.id), sourceName: String(entry.source_name), relativePath: String(entry.relative_path), sourceSize: Number(entry.source_size), mediaKind: String(entry.media_kind) as MediaKind, status: String(entry.status) as ImportEntryStatus, errorCode: entry.error_code === null ? null : String(entry.error_code), errorMessage: entry.error_message === null ? null : String(entry.error_message), sourceCleanupStatus: String(entry.source_cleanup_status) as 'not_requested' | 'pending' | 'trashed' | 'failed', sourceCleanupError: entry.source_cleanup_error === null ? null : String(entry.source_cleanup_error) })) }
 }
 function previewUrl(hash: string, status: string): string | null { return status === 'ready' ? `gallery-thumb://${hash}` : null }
-type AlbumSummaryRow = { id: string; title: string; updated_at: number; media_count: number; cover_hash: string | null }
-function getAlbumSummaries(folderId: string | null): Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }> {
+type AlbumSummaryRow = { id: string; title: string; updated_at: number; media_count: number; cover_hash: string | null; cover_status: string | null }
+function getAlbumSummaries(folderId: string | null): AlbumSummary[] {
   const albums = sqlite.prepare(`SELECT a.id, a.title, a.updated_at, COUNT(m.id) AS media_count,
     (SELECT m.content_hash FROM album_items ai2 JOIN media_items m ON m.id = ai2.media_id
-      WHERE ai2.album_id = a.id AND m.preview_status = 'ready' AND m.trash_state = 'active' ORDER BY ai2.sort_order LIMIT 1) AS cover_hash
+      WHERE ai2.album_id = a.id AND m.media_kind IN ('image', 'video') AND m.trash_state = 'active' ORDER BY ai2.sort_order, ai2.media_id LIMIT 1) AS cover_hash
+    , (SELECT m.preview_status FROM album_items ai2 JOIN media_items m ON m.id = ai2.media_id
+      WHERE ai2.album_id = a.id AND m.media_kind IN ('image', 'video') AND m.trash_state = 'active' ORDER BY ai2.sort_order, ai2.media_id LIMIT 1) AS cover_status
     FROM albums a LEFT JOIN album_items ai ON ai.album_id = a.id LEFT JOIN media_items m ON m.id = ai.media_id AND m.trash_state = 'active'
     WHERE a.trash_state = 'active' AND a.folder_id IS ? GROUP BY a.id ORDER BY a.updated_at DESC`).all(folderId) as AlbumSummaryRow[]
-  return albums.map((album) => ({ id: album.id, title: album.title, mediaCount: Number(album.media_count), updatedAt: Number(album.updated_at), coverPreviewUrl: album.cover_hash ? previewUrl(album.cover_hash, 'ready') : null }))
+  return albums.map((album) => ({
+    id: album.id,
+    title: album.title,
+    mediaCount: Number(album.media_count),
+    updatedAt: Number(album.updated_at),
+    coverPreviewUrl: album.cover_hash && album.cover_status === 'ready' ? previewUrl(album.cover_hash, 'ready') : null,
+    coverPreviewPending: album.cover_status === 'pending' || album.cover_status === 'generating'
+  }))
 }
 function getFolderSummaries(parentId: string | null): FolderSummary[] {
   const rows = sqlite.prepare(`SELECT f.id, f.title, f.parent_id, f.updated_at,
@@ -611,10 +629,40 @@ function getFolderSummaries(parentId: string | null): FolderSummary[] {
     FROM folders f WHERE f.parent_id IS ? AND f.trash_state = 'active' ORDER BY f.updated_at DESC, f.title COLLATE NOCASE`).all(parentId) as Array<{ id: string; title: string; parent_id: string | null; updated_at: number; folder_count: number; album_count: number; media_count: number }>
   return rows.map((row) => ({ id: row.id, title: row.title, parentId: row.parent_id, updatedAt: Number(row.updated_at), folderCount: Number(row.folder_count), albumCount: Number(row.album_count), mediaCount: Number(row.media_count) }))
 }
+function getFolderTree(): FolderTreeNode[] {
+  const folders = sqlite.prepare(`SELECT f.id, f.title, f.parent_id,
+      (SELECT COUNT(*) FROM folders child WHERE child.parent_id = f.id AND child.trash_state = 'active') +
+      (SELECT COUNT(*) FROM albums a WHERE a.folder_id = f.id AND a.trash_state = 'active') +
+      (SELECT COUNT(*) FROM media_items m WHERE m.folder_id = f.id AND m.trash_state = 'active'
+        AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = m.id AND a.trash_state = 'active')) AS item_count
+    FROM folders f WHERE f.trash_state = 'active'`).all() as Array<{ id: string; title: string; parent_id: string | null; item_count: number }>
+  type MutableNode = Omit<FolderTreeNode, 'children'> & { children: MutableNode[] }
+  const nodes = new Map<string, MutableNode>(folders.map((folder) => [folder.id, {
+    id: folder.id,
+    title: folder.title,
+    parentId: folder.parent_id,
+    itemCount: Number(folder.item_count),
+    children: []
+  }]))
+  const roots: MutableNode[] = []
+  nodes.forEach((node) => {
+    const parent = node.parentId ? nodes.get(node.parentId) : undefined
+    if (parent && parent !== node) parent.children.push(node)
+    else roots.push(node)
+  })
+  const stripNode = (node: MutableNode): FolderTreeNode => ({
+    id: node.id,
+    title: node.title,
+    parentId: node.parentId,
+    itemCount: node.itemCount,
+    children: node.children.map(stripNode)
+  })
+  return roots.map(stripNode)
+}
 function getLibrary(): LibrarySnapshot {
   const counts = sqlite.prepare("SELECT media_kind, COUNT(*) AS count FROM media_items WHERE trash_state = 'active' GROUP BY media_kind").all() as Array<{ media_kind: MediaKind; count: number }>
   const byKind = new Map(counts.map((row) => [row.media_kind, Number(row.count)]))
-  const looseMedia = sqlite.prepare(`SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status FROM media_items m WHERE m.trash_state = 'active' AND m.folder_id IS NULL AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = m.id AND a.trash_state = 'active') ORDER BY m.imported_at DESC LIMIT 100`).all() as Record<string, unknown>[]
+  const looseMedia = sqlite.prepare(`SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status, m.preview_error FROM media_items m WHERE m.trash_state = 'active' AND m.folder_id IS NULL AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = m.id AND a.trash_state = 'active') ORDER BY m.imported_at DESC LIMIT 100`).all() as Record<string, unknown>[]
   const images = byKind.get('image') ?? 0; const videos = byKind.get('video') ?? 0; const files = byKind.get('file') ?? 0
   return { totals: { all: images + videos + files, images, videos, files }, folders: getFolderSummaries(null), albums: getAlbumSummaries(null), looseMedia: looseMedia.map(asMedia) }
 }
@@ -656,7 +704,7 @@ function getFolder(folderId: string): FolderDetail {
   const breadcrumbs: Array<{ id: string; title: string }> = []
   let current: typeof folder | undefined = folder
   while (current) { breadcrumbs.unshift({ id: current.id, title: current.title }); current = current.parent_id ? sqlite.prepare("SELECT id, title, parent_id, updated_at FROM folders WHERE id = ? AND trash_state = 'active'").get(current.parent_id) as typeof folder | undefined : undefined }
-  const media = sqlite.prepare(`SELECT id, original_name, media_kind, imported_at, content_hash, preview_status FROM media_items
+  const media = sqlite.prepare(`SELECT id, original_name, media_kind, imported_at, content_hash, preview_status, preview_error FROM media_items
     WHERE folder_id = ? AND trash_state = 'active'
       AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = media_items.id AND a.trash_state = 'active')
     ORDER BY imported_at DESC`).all(folderId) as Record<string, unknown>[]
@@ -665,7 +713,7 @@ function getFolder(folderId: string): FolderDetail {
 function getAlbum(albumId: string): AlbumDetail {
   const album = sqlite.prepare("SELECT id, title, folder_id, updated_at FROM albums WHERE id = ? AND trash_state = 'active'").get(albumId) as { id: string; title: string; folder_id: string | null; updated_at: number } | undefined
   if (!album) throw new Error('图集不存在或已在回收站')
-  const media = sqlite.prepare("SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status FROM album_items ai JOIN media_items m ON m.id = ai.media_id WHERE ai.album_id = ? AND m.trash_state = 'active' ORDER BY ai.sort_order").all(albumId) as Record<string, unknown>[]
+  const media = sqlite.prepare("SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status, m.preview_error FROM album_items ai JOIN media_items m ON m.id = ai.media_id WHERE ai.album_id = ? AND m.trash_state = 'active' ORDER BY ai.sort_order").all(albumId) as Record<string, unknown>[]
   return { id: album.id, title: album.title, folderId: album.folder_id, updatedAt: Number(album.updated_at), media: media.map(asMedia) }
 }
 function getMediaPath(mediaId: string): string {
@@ -760,6 +808,7 @@ parent.on('message', (request: Request) => {
       else if (request.command === 'get-jobs') reply(request.id, getJobs())
       else if (request.command === 'get-job') reply(request.id, getJob(String(request.payload)))
       else if (request.command === 'get-library') reply(request.id, getLibrary())
+      else if (request.command === 'get-folder-tree') reply(request.id, getFolderTree())
       else if (request.command === 'get-album') reply(request.id, getAlbum(String(request.payload)))
       else if (request.command === 'get-media-path') reply(request.id, getMediaPath(String(request.payload)))
       else if (request.command === 'get-folder') reply(request.id, getFolder(String(request.payload)))

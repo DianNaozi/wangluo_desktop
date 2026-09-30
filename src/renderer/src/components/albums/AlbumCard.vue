@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ContextMenuContent, ContextMenuItem, ContextMenuPortal, ContextMenuRoot, ContextMenuTrigger } from 'reka-ui'
-import { FolderOpen, Images, ListPlus, Trash2 } from 'lucide-vue-next'
+import { FolderOpen, Images, ListPlus, LoaderCircle, Trash2 } from 'lucide-vue-next'
 
-type AlbumCardData = { id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }
+type AlbumCardData = { id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null; coverPreviewPending: boolean }
 
 defineProps<{ album: AlbumCardData; previewUnavailable?: boolean; subtitle: string }>()
 defineEmits<{ open: []; queue: []; delete: []; dragstart: [event: DragEvent]; previewError: [] }>()
@@ -14,6 +14,7 @@ defineEmits<{ open: []; queue: []; delete: []; dragstart: [event: DragEvent]; pr
       <article draggable="true" class="cursor-pointer overflow-hidden rounded-lg border border-line bg-surface transition-colors hover:border-violet-500/60 hover:bg-surface-hover" @click="$emit('open')" @dragstart="$emit('dragstart', $event)">
         <div class="grid aspect-[16/9] place-items-center overflow-hidden bg-gradient-to-br from-violet-500/25 via-fuchsia-500/10 to-sky-400/20">
           <img v-if="album.coverPreviewUrl && !previewUnavailable" :src="album.coverPreviewUrl" :alt="album.title" class="h-full w-full object-cover" @error="$emit('previewError')">
+          <LoaderCircle v-else-if="album.coverPreviewPending" class="animate-spin text-violet-500" :size="30" aria-label="正在生成封面" />
           <Images v-else class="text-violet-500" :size="34" />
         </div>
         <div class="flex items-start gap-2 p-3"><div class="min-w-0 flex-1"><p class="truncate text-sm font-semibold text-foreground">{{ album.title }}</p><p class="mt-0.5 text-xs text-muted">{{ subtitle }} · {{ album.mediaCount }} 项</p></div><slot name="footer" /></div>

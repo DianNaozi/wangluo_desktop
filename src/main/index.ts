@@ -4,6 +4,9 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ImportManager } from './import/import-manager'
 import { createMediaResponse } from './media-response'
+import { createPlaybackFullscreen } from './playback-fullscreen'
+
+const playbackFullscreen = new WeakMap<BrowserWindow, ReturnType<typeof createPlaybackFullscreen>>()
 
 let importManager: ImportManager
 let resourceRoot = ''
@@ -57,12 +60,24 @@ function createWindow(): void {
     webPreferences: { preload: join(__dirname, '../preload/index.js'), contextIsolation: true, nodeIntegration: false, sandbox: true }
   })
   window.webContents.setWindowOpenHandler(({ url }) => { void shell.openExternal(url); return { action: 'deny' } })
+  const setPlaybackFullscreen = createPlaybackFullscreen(window)
+  playbackFullscreen.set(window, setPlaybackFullscreen)
+  window.webContents.on('render-process-gone', () => { void setPlaybackFullscreen(false).catch(() => {}) })
+  window.webContents.on('did-start-loading', () => { void setPlaybackFullscreen(false).catch(() => {}) })
   if (process.env['ELECTRON_RENDERER_URL']) void window.loadURL(process.env['ELECTRON_RENDERER_URL'])
   else void window.loadFile(join(__dirname, '../renderer/index.html'))
 }
 
 app.whenReady().then(async () => {
   ipcMain.handle('app:get-version', () => app.getVersion())
+  ipcMain.handle('playback:set-fullscreen', (event, active: unknown) => {
+    if (typeof active !== 'boolean') throw new Error('全屏参数无效')
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window || event.senderFrame !== event.sender.mainFrame) throw new Error('无效的播放窗口')
+    const setFullscreen = playbackFullscreen.get(window)
+    if (!setFullscreen) throw new Error('播放窗口尚未就绪')
+    return setFullscreen(active)
+  })
   const settings = await loadStoredSettings()
   const directory = resourceDirectoryFrom(settings)
   resourceRoot = directory.path
@@ -88,6 +103,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:get-jobs', () => importManager.getJobs())
   ipcMain.handle('media:get-job', (_event, jobId: string) => importManager.getJob(jobId))
   ipcMain.handle('media:get-library', () => importManager.getLibrary())
+  ipcMain.handle('media:get-folder-tree', () => importManager.getFolderTree())
   ipcMain.handle('media:get-album', (_event, albumId: string) => importManager.getAlbum(albumId))
   ipcMain.handle('media:get-folder', (_event, folderId: string) => importManager.getFolder(folderId))
   ipcMain.handle('media:create-folder', (_event, title: string, parentId: string | null) => importManager.createFolder(title, parentId))
@@ -96,6 +112,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:get-trash', () => importManager.getTrash())
   ipcMain.handle('media:retry-job', (_event, jobId: string) => importManager.retry(jobId))
   ipcMain.handle('media:rebuild-previews', () => importManager.rebuildPreviews())
+  ipcMain.handle('media:retry-preview', (_event, mediaId: string) => importManager.retryPreview(mediaId))
   ipcMain.handle('media:trash-media', (_event, mediaId: string) => importManager.trashMedia(mediaId))
   ipcMain.handle('media:trash-album', (_event, albumId: string) => importManager.trashAlbum(albumId))
   ipcMain.handle('media:trash-folder', (_event, folderId: string) => importManager.trashFolder(folderId))

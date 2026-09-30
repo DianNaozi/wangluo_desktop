@@ -4,7 +4,7 @@ import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createDatabase } from './database'
-import type { AlbumDetail, FolderDetail, FolderSummary, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
+import type { AlbumDetail, FolderDetail, FolderSummary, FolderTreeNode, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
 
 type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null }
 type PendingRequest = { resolve(value: unknown): void; reject(reason: Error): void }
@@ -105,12 +105,12 @@ export class ImportManager {
       try { this.worker?.postMessage({ id, command, payload }) } catch (error) { this.pending.delete(id); reject(error instanceof Error ? error : new Error(String(error))) }
     })
   }
-  private previewRequest<T>(command: 'rebuild' | 'wake'): Promise<T> {
+  private previewRequest<T>(command: 'rebuild' | 'retry' | 'wake', payload?: unknown): Promise<T> {
     if (!this.previewWorker) return Promise.reject(new Error('预览服务正在恢复，请稍后重试'))
     const id = randomUUID()
     return new Promise<T>((resolve, reject) => {
       this.previewPending.set(id, { resolve: resolve as (value: unknown) => void, reject })
-      try { this.previewWorker?.postMessage({ id, command }) } catch (error) { this.previewPending.delete(id); reject(error instanceof Error ? error : new Error(String(error))) }
+      try { this.previewWorker?.postMessage({ id, command, payload }) } catch (error) { this.previewPending.delete(id); reject(error instanceof Error ? error : new Error(String(error))) }
     })
   }
   private wakePreviewWorker(): void { void this.previewRequest<boolean>('wake').catch(() => undefined) }
@@ -164,6 +164,7 @@ export class ImportManager {
   getJobs(): Promise<ImportJobSummary[]> { return this.request('get-jobs') }
   getJob(jobId: string): Promise<ImportJobDetail> { return this.request('get-job', jobId) }
   getLibrary(): Promise<LibrarySnapshot> { return this.request('get-library') }
+  getFolderTree(): Promise<FolderTreeNode[]> { return this.request('get-folder-tree') }
   getAlbum(albumId: string): Promise<AlbumDetail> { return this.request('get-album', albumId) }
   getMediaPath(mediaId: string): Promise<string> { return this.request('get-media-path', mediaId) }
   getFolder(folderId: string): Promise<FolderDetail> { return this.request('get-folder', folderId) }
@@ -173,6 +174,7 @@ export class ImportManager {
   getTrash(): Promise<TrashSnapshot> { return this.request('get-trash') }
   retry(jobId: string): Promise<ImportJobSummary> { return this.request('retry', jobId) }
   rebuildPreviews(): Promise<number> { return this.previewRequest('rebuild') }
+  retryPreview(mediaId: string): Promise<boolean> { return this.previewRequest('retry', mediaId) }
   trashMedia(mediaId: string): Promise<TrashOperationResult> { return this.request('trash-media', mediaId) }
   trashAlbum(albumId: string): Promise<TrashOperationResult> { return this.request('trash-album', albumId) }
   trashFolder(folderId: string): Promise<TrashOperationResult> { return this.request('trash-folder', folderId) }

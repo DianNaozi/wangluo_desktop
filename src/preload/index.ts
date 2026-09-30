@@ -4,20 +4,26 @@ export type MediaKind = 'image' | 'video' | 'file'
 export type ImportJobStatus = 'planned' | 'queued' | 'running' | 'completed' | 'partial_failed' | 'interrupted'
 export type ImportEntryStatus = 'planned' | 'hashing' | 'copying' | 'imported' | 'duplicate' | 'skipped' | 'failed'
 export type PreviewStatus = 'not_requested' | 'pending' | 'generating' | 'ready' | 'failed'
-export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; mediaUrl: string; previewStatus: PreviewStatus }
+export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; mediaUrl: string; previewStatus: PreviewStatus; previewError: string | null }
 export type AlbumDetail = { id: string; title: string; folderId: string | null; updatedAt: number; media: LibraryMedia[] }
 export type FolderSummary = { id: string; title: string; parentId: string | null; updatedAt: number; folderCount: number; albumCount: number; mediaCount: number }
-export type FolderDetail = FolderSummary & { breadcrumbs: Array<{ id: string; title: string }>; folders: FolderSummary[]; albums: Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }>; media: LibraryMedia[] }
+export type FolderTreeNode = { id: string; title: string; parentId: string | null; itemCount: number; children: FolderTreeNode[] }
+export type AlbumSummary = { id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null; coverPreviewPending: boolean }
+export type FolderDetail = FolderSummary & { breadcrumbs: Array<{ id: string; title: string }>; folders: FolderSummary[]; albums: AlbumSummary[]; media: LibraryMedia[] }
 export type TrashItem = { entityType: 'media' | 'album' | 'folder' | 'orphan'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number; state: 'trashed' | 'pending_trash' | 'pending_restore'; failureReason: string | null }
 export type TrashSnapshot = { items: TrashItem[] }
 export type TrashOperationResult = { succeeded: string[]; pending: string[]; failed: Array<{ id: string; reason: string }> }
 export type ImportJobSummary = { id: string; sourceKind: 'files' | 'folders'; status: ImportJobStatus; totalEntries: number; totalBytes: number; processedEntries: number; importedEntries: number; duplicateEntries: number; failedEntries: number; skippedEntries: number; sourceCleanupFailedEntries: number; createdAt: number; startedAt: number | null; completedAt: number | null }
 export type ImportEntrySummary = { id: string; sourceName: string; relativePath: string; sourceSize: number; mediaKind: MediaKind; status: ImportEntryStatus; errorCode: string | null; errorMessage: string | null; sourceCleanupStatus: 'not_requested' | 'pending' | 'trashed' | 'failed'; sourceCleanupError: string | null }
 export type ImportJobDetail = ImportJobSummary & { entries: ImportEntrySummary[] }
-export type LibrarySnapshot = { totals: { all: number; images: number; videos: number; files: number }; folders: FolderSummary[]; albums: Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }>; looseMedia: LibraryMedia[] }
+export type LibrarySnapshot = { totals: { all: number; images: number; videos: number; files: number }; folders: FolderSummary[]; albums: AlbumSummary[]; looseMedia: LibraryMedia[] }
 
 const api = {
   version: '1.0',
+  playback: {
+    enterFullscreen: (): Promise<void> => ipcRenderer.invoke('playback:set-fullscreen', true),
+    exitFullscreen: (): Promise<void> => ipcRenderer.invoke('playback:set-fullscreen', false)
+  },
   app: { getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version') },
   media: {
     importFiles: (folderId: string | null = null): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-files', folderId),
@@ -26,6 +32,7 @@ const api = {
     getJob: (jobId: string): Promise<ImportJobDetail> => ipcRenderer.invoke('media:get-job', jobId),
     retryJob: (jobId: string): Promise<ImportJobSummary> => ipcRenderer.invoke('media:retry-job', jobId),
     rebuildPreviews: (): Promise<number> => ipcRenderer.invoke('media:rebuild-previews'),
+    retryPreview: (mediaId: string): Promise<boolean> => ipcRenderer.invoke('media:retry-preview', mediaId),
     trashMedia: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:trash-media', id),
     trashAlbum: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:trash-album', id),
     trashFolder: (id: string): Promise<TrashOperationResult> => ipcRenderer.invoke('media:trash-folder', id),
@@ -56,6 +63,7 @@ const api = {
   },
   library: {
     getSnapshot: (): Promise<LibrarySnapshot> => ipcRenderer.invoke('media:get-library'),
+    getFolderTree: (): Promise<FolderTreeNode[]> => ipcRenderer.invoke('media:get-folder-tree'),
     getAlbum: (id: string): Promise<AlbumDetail> => ipcRenderer.invoke('media:get-album', id),
     getFolder: (id: string): Promise<FolderDetail> => ipcRenderer.invoke('media:get-folder', id),
     createFolder: (title: string, parentId: string | null): Promise<FolderSummary> => ipcRenderer.invoke('media:create-folder', title, parentId),

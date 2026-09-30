@@ -10,6 +10,7 @@ export type LibraryMedia = {
     previewUrl: string | null;
     mediaUrl: string;
     previewStatus: PreviewStatus;
+    previewError: string | null;
 };
 export type AlbumDetail = {
     id: string;
@@ -27,19 +28,28 @@ export type FolderSummary = {
     albumCount: number;
     mediaCount: number;
 };
+export type FolderTreeNode = {
+    id: string;
+    title: string;
+    parentId: string | null;
+    itemCount: number;
+    children: FolderTreeNode[];
+};
+export type AlbumSummary = {
+    id: string;
+    title: string;
+    mediaCount: number;
+    updatedAt: number;
+    coverPreviewUrl: string | null;
+    coverPreviewPending: boolean;
+};
 export type FolderDetail = FolderSummary & {
     breadcrumbs: Array<{
         id: string;
         title: string;
     }>;
     folders: FolderSummary[];
-    albums: Array<{
-        id: string;
-        title: string;
-        mediaCount: number;
-        updatedAt: number;
-        coverPreviewUrl: string | null;
-    }>;
+    albums: AlbumSummary[];
     media: LibraryMedia[];
 };
 export type TrashItem = {
@@ -103,13 +113,7 @@ export type LibrarySnapshot = {
         files: number;
     };
     folders: FolderSummary[];
-    albums: Array<{
-        id: string;
-        title: string;
-        mediaCount: number;
-        updatedAt: number;
-        coverPreviewUrl: string | null;
-    }>;
+    albums: AlbumSummary[];
     looseMedia: LibraryMedia[];
 };
 export type ResourceDirectory = {

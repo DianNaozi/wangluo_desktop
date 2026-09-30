@@ -1,15 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
+import { execFile, spawnSync } from 'node:child_process'
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
+import { promisify } from 'node:util'
+import ffmpegPath from 'ffmpeg-static'
+import sharp from 'sharp'
 import { createDatabase } from '../src/main/import/database'
 
 type Job = { id: string; status: string; totalEntries: number; importedEntries: number; sourceCleanupFailedEntries: number }
-type Library = { totals: { all: number }; albums: Array<{ id: string }>; looseMedia: Array<{ id: string }> }
+type Library = { totals: { all: number }; albums: Array<{ id: string; coverPreviewUrl: string | null; coverPreviewPending?: boolean }>; looseMedia: Array<{ id: string; previewStatus: string; previewError: string | null; previewUrl: string | null }> }
+type FolderTree = Array<{ id: string; title: string; parentId: string | null; itemCount: number; children: FolderTree }>
 type Trash = { items: Array<{ id: string; entityType: string }> }
 type StorageEligibility = { canChangeResourceDirectory: boolean; reason: string | null }
+const runFile = promisify(execFile)
+const canRunFfmpeg = Boolean(ffmpegPath) && spawnSync(ffmpegPath!, ['-version'], { windowsHide: true }).status === 0
 
 class ImportWorkerClient {
   private readonly pending = new Map<string, { resolve(value: unknown): void; reject(reason: Error): void }>()
@@ -55,6 +62,40 @@ class ImportWorkerClient {
       this.worker.postMessage({ id, command, payload })
     })
   }
+  async dispose(): Promise<void> { await this.worker.terminate() }
+}
+
+class PreviewWorkerClient {
+  private readonly pending = new Map<string, { resolve(value: unknown): void; reject(reason: Error): void }>()
+  readonly worker: Worker
+
+  constructor(databasePath: string, storagePath: string) {
+    this.worker = new Worker(resolve('out/main/preview-worker.js'), { workerData: { databasePath, storagePath } })
+    this.worker.on('message', (message: { type: string; id?: string; result?: unknown }) => {
+      if (message.type !== 'response' || !message.id) return
+      const pending = this.pending.get(message.id)
+      if (!pending) return
+      this.pending.delete(message.id)
+      const result = message.result as { error?: string }
+      if (result?.error) pending.reject(new Error(result.error)); else pending.resolve(result)
+    })
+  }
+
+  request<T>(command: 'wake' | 'rebuild' | 'retry', payload?: unknown): Promise<T> {
+    const id = randomUUID()
+    return new Promise<T>((resolveRequest, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pending.delete(id)) return
+        reject(new Error(`Timed out waiting for preview ${command}`))
+      }, 3000)
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timeout); resolveRequest(value as T) },
+        reject: (reason) => { clearTimeout(timeout); reject(reason) }
+      })
+      this.worker.postMessage({ id, command, payload })
+    })
+  }
+
   async dispose(): Promise<void> { await this.worker.terminate() }
 }
 
@@ -178,6 +219,110 @@ describe('import worker integration', () => {
     expect((await client.request<Library>('get-library')).totals.all).toBe(1)
   })
 
+  it('generates a folder album cover after importing an image', async () => {
+    const sourceDirectory = join(root, 'image-album')
+    const sourceImage = join(sourceDirectory, 'cover.png')
+    await mkdir(sourceDirectory)
+    await sharp({ create: { width: 16, height: 12, channels: 3, background: '#8b5cf6' } }).png().toFile(sourceImage)
+
+    await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder' }])
+    await waitFor(() => client.request<Job[]>('get-jobs'), (jobs) => jobs.some((job) => job.status === 'completed'))
+    const beforePreview = await client.request<Library>('get-library')
+    expect(beforePreview.albums[0]).toMatchObject({ coverPreviewUrl: null, coverPreviewPending: true })
+
+    const previewClient = new PreviewWorkerClient(join(root, 'gallery.sqlite'), root)
+    try {
+      await previewClient.request<boolean>('wake')
+      const library = await waitFor(() => client.request<Library>('get-library'), (snapshot) => snapshot.albums[0]?.coverPreviewUrl !== null)
+      const album = library.albums[0]!
+      expect(album.coverPreviewPending).toBe(false)
+      const thumbnailHash = new URL(album.coverPreviewUrl!).hostname
+      await access(join(root, 'thumbnails', `${thumbnailHash}.webp`))
+    } finally { await previewClient.dispose() }
+  })
+
+  ;(canRunFfmpeg ? it : it.skip)('generates a WebP preview for an imported MP4', async () => {
+    const source = join(root, 'sample.mp4')
+    await runFile(ffmpegPath!, ['-y', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=25', '-t', '1', '-pix_fmt', 'yuv420p', source], { windowsHide: true })
+    await client.request<Job>('plan', [{ path: source, kind: 'file' }])
+    await waitFor(() => client.request<Job[]>('get-jobs'), (jobs) => jobs.some((job) => job.status === 'completed'))
+
+    const previewClient = new PreviewWorkerClient(join(root, 'gallery.sqlite'), root)
+    try {
+      await previewClient.request<boolean>('wake')
+      const library = await waitFor(() => client.request<Library>('get-library'), (snapshot) => snapshot.looseMedia[0]?.previewStatus === 'ready')
+      const media = library.looseMedia[0]!
+      expect(media.previewUrl).toMatch(/^gallery-thumb:\/\//)
+      const thumbnailHash = new URL(media.previewUrl!).hostname
+      const metadata = await sharp(join(root, 'thumbnails', `${thumbnailHash}.webp`)).metadata()
+      expect(metadata.format).toBe('webp')
+      expect(metadata.width).toBeGreaterThan(0)
+      expect(metadata.height).toBeGreaterThan(0)
+      expect(metadata.width).toBeLessThanOrEqual(640)
+      expect(metadata.height).toBeLessThanOrEqual(640)
+    } finally { await previewClient.dispose() }
+  })
+
+  it('returns preview errors and requeues a failed video preview', async () => {
+    await client.dispose()
+    const databasePath = join(root, 'preview-retry.sqlite')
+    const mediaId = randomUUID()
+    const now = Date.now()
+    const { sqlite } = createDatabase(databasePath)
+    try {
+      sqlite.prepare("INSERT INTO media_items (id, content_hash, media_kind, original_name, extension, byte_size, object_path, preview_status, preview_error, preview_priority, preview_version, trash_state, imported_at) VALUES (?, ?, 'video', 'broken.mp4', '.mp4', 1, ?, 'pending', NULL, 100, 1, 'active', ?)").run(mediaId, 'd'.repeat(64), join(root, 'missing.mp4'), now)
+    } finally { sqlite.close() }
+    client = new ImportWorkerClient(databasePath, root)
+    const previewClient = new PreviewWorkerClient(databasePath, root)
+    try {
+      await previewClient.request<boolean>('wake')
+      const failed = await waitFor(() => client.request<Library>('get-library'), (snapshot) => snapshot.looseMedia[0]?.previewStatus === 'failed')
+      expect(failed.looseMedia[0]).toMatchObject({ previewError: expect.any(String), previewUrl: null })
+
+      const activeDatabase = createDatabase(databasePath).sqlite
+      try {
+        activeDatabase.prepare("INSERT INTO import_jobs (id, source_kind, status, total_entries, total_bytes, created_at, queued_at) VALUES (?, 'files', 'running', 0, 0, ?, ?)").run(randomUUID(), now, now)
+      } finally { activeDatabase.close() }
+      expect(await previewClient.request<boolean>('retry', mediaId)).toBe(true)
+      const requeued = await client.request<Library>('get-library')
+      expect(requeued.looseMedia[0]).toMatchObject({ previewStatus: 'pending', previewError: null, previewUrl: null })
+    } finally { await previewClient.dispose() }
+  })
+
+  it('keeps an album cover bound to its first previewable media', async () => {
+    const databasePath = join(root, 'gallery.sqlite')
+    const { sqlite } = createDatabase(databasePath)
+    const albumId = 'fixed-cover-album'
+    const firstHash = 'a'.repeat(64)
+    const secondHash = 'b'.repeat(64)
+    const now = Date.now()
+    try {
+      sqlite.prepare("INSERT INTO albums (id, title, created_at, updated_at, trash_state) VALUES (?, '固定封面', ?, ?, 'active')").run(albumId, now, now)
+      const insertMedia = sqlite.prepare("INSERT INTO media_items (id, content_hash, media_kind, original_name, extension, byte_size, object_path, preview_status, preview_priority, preview_version, trash_state, imported_at) VALUES (?, ?, 'image', ?, '.png', 1, ?, ?, 0, 1, 'active', ?)")
+      insertMedia.run('media-a', firstHash, 'first.png', join(root, 'first.png'), 'pending', now)
+      insertMedia.run('media-b', secondHash, 'second.png', join(root, 'second.png'), 'ready', now)
+      sqlite.prepare('INSERT INTO album_items (album_id, media_id, sort_order) VALUES (?, ?, ?), (?, ?, ?)').run(albumId, 'media-a', 1, albumId, 'media-b', 2)
+    } finally { sqlite.close() }
+
+    const readCover = async () => (await client.request<Library>('get-library')).albums.find((album) => album.id === albumId)!
+    expect(await readCover()).toMatchObject({ coverPreviewUrl: null, coverPreviewPending: true })
+
+    const readyDatabase = createDatabase(databasePath).sqlite
+    try { readyDatabase.prepare("UPDATE media_items SET preview_status = 'ready' WHERE id = 'media-a'").run() } finally { readyDatabase.close() }
+    expect(await readCover()).toMatchObject({ coverPreviewUrl: `gallery-thumb://${firstHash}`, coverPreviewPending: false })
+
+    const failedDatabase = createDatabase(databasePath).sqlite
+    try { failedDatabase.prepare("UPDATE media_items SET preview_status = 'failed' WHERE id = 'media-a'").run() } finally { failedDatabase.close() }
+    expect(await readCover()).toMatchObject({ coverPreviewUrl: null, coverPreviewPending: false })
+
+    const tiedDatabase = createDatabase(databasePath).sqlite
+    try {
+      tiedDatabase.prepare("UPDATE media_items SET preview_status = 'ready' WHERE id = 'media-a'").run()
+      tiedDatabase.prepare('UPDATE album_items SET sort_order = 10 WHERE album_id = ?').run(albumId)
+    } finally { tiedDatabase.close() }
+    expect(await readCover()).toMatchObject({ coverPreviewUrl: `gallery-thumb://${firstHash}`, coverPreviewPending: false })
+  })
+
   it('quarantines an unindexed managed object and exports a copy without indexing it', async () => {
     await client.dispose()
     const orphanPath = join(root, 'objects', 'ab', 'cd', 'left-behind.bin')
@@ -225,6 +370,26 @@ describe('import worker integration', () => {
       expect(columns('albums')).toContain('folder_id')
       expect(columns('media_items')).toContain('folder_id')
     } finally { sqlite.close() }
+  })
+
+  it('returns active folders as a tree with direct item counts', async () => {
+    const databasePath = join(root, 'folder-tree.sqlite')
+    const { sqlite } = createDatabase(databasePath)
+    const now = Date.now()
+    try {
+      sqlite.prepare("INSERT INTO folders (id, title, parent_id, created_at, updated_at, trash_state) VALUES ('parent', '旅行', NULL, ?, ?, 'active'), ('child', '东京', 'parent', ?, ?, 'active'), ('trashed', '已删除', NULL, ?, ?, 'trashed')").run(now, now, now, now, now, now)
+      sqlite.prepare("INSERT INTO albums (id, title, folder_id, created_at, updated_at, trash_state) VALUES ('parent-album', '旅行图集', 'parent', ?, ?, 'active'), ('child-album', '东京图集', 'child', ?, ?, 'active')").run(now, now, now, now)
+      const insertMedia = sqlite.prepare("INSERT INTO media_items (id, content_hash, media_kind, original_name, extension, byte_size, object_path, preview_status, preview_priority, preview_version, trash_state, folder_id, imported_at) VALUES (?, ?, 'image', ?, '.png', 1, ?, 'not_requested', 0, 1, 'active', ?, ?)")
+      insertMedia.run('parent-direct', 'a'.repeat(64), 'parent.png', join(root, 'parent.png'), 'parent', now)
+      insertMedia.run('child-direct', 'b'.repeat(64), 'child.png', join(root, 'child.png'), 'child', now)
+      insertMedia.run('child-album-media', 'c'.repeat(64), 'album.png', join(root, 'album.png'), 'child', now)
+      sqlite.prepare("INSERT INTO album_items (album_id, media_id, sort_order) VALUES ('parent-album', 'child-album-media', 1), ('child-album', 'child-album-media', 1)").run()
+    } finally { sqlite.close() }
+
+    await client.dispose()
+    client = new ImportWorkerClient(databasePath, root)
+    const tree = await client.request<FolderTree>('get-folder-tree')
+    expect(tree).toEqual([{ id: 'parent', title: '旅行', parentId: null, itemCount: 3, children: [{ id: 'child', title: '东京', parentId: 'parent', itemCount: 2, children: [] }] }])
   })
 
   it('organizes an unarchived media item into a two-level folder hierarchy', async () => {

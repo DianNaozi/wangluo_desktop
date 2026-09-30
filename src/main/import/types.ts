@@ -3,10 +3,12 @@ export type ImportJobStatus = 'planned' | 'queued' | 'running' | 'completed' | '
 export type ImportEntryStatus = 'planned' | 'hashing' | 'copying' | 'imported' | 'duplicate' | 'skipped' | 'failed'
 export type PreviewStatus = 'not_requested' | 'pending' | 'generating' | 'ready' | 'failed'
 export type TrashState = 'active' | 'pending_trash' | 'trashed' | 'pending_restore'
-export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; mediaUrl: string; previewStatus: PreviewStatus }
+export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; mediaUrl: string; previewStatus: PreviewStatus; previewError: string | null }
 export type AlbumDetail = { id: string; title: string; folderId: string | null; updatedAt: number; media: LibraryMedia[] }
 export type FolderSummary = { id: string; title: string; parentId: string | null; updatedAt: number; folderCount: number; albumCount: number; mediaCount: number }
-export type FolderDetail = FolderSummary & { breadcrumbs: Array<{ id: string; title: string }>; folders: FolderSummary[]; albums: Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }>; media: LibraryMedia[] }
+export type FolderTreeNode = { id: string; title: string; parentId: string | null; itemCount: number; children: FolderTreeNode[] }
+export type AlbumSummary = { id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null; coverPreviewPending: boolean }
+export type FolderDetail = FolderSummary & { breadcrumbs: Array<{ id: string; title: string }>; folders: FolderSummary[]; albums: AlbumSummary[]; media: LibraryMedia[] }
 export type TrashItem = { entityType: 'media' | 'album' | 'folder' | 'orphan'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number; state: 'trashed' | 'pending_trash' | 'pending_restore'; failureReason: string | null }
 export type TrashSnapshot = { items: TrashItem[] }
 export type TrashOperationResult = { succeeded: string[]; pending: string[]; failed: Array<{ id: string; reason: string }> }
@@ -47,7 +49,7 @@ export type ImportJobDetail = ImportJobSummary & { entries: ImportEntrySummary[]
 export type LibrarySnapshot = {
   totals: { all: number; images: number; videos: number; files: number }
   folders: FolderSummary[]
-  albums: Array<{ id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null }>
+  albums: AlbumSummary[]
   looseMedia: LibraryMedia[]
 }
 
