@@ -1,7 +1,8 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 export type MediaKind = 'image' | 'video' | 'file'
 export type ImportJobStatus = 'planned' | 'queued' | 'running' | 'completed' | 'partial_failed' | 'interrupted'
+export type ImportDestination = { type: 'library' } | { type: 'folder'; folderId: string } | { type: 'coser'; coserId: string }
 export type ImportEntryStatus = 'planned' | 'hashing' | 'copying' | 'imported' | 'duplicate' | 'skipped' | 'failed'
 export type PreviewStatus = 'not_requested' | 'pending' | 'generating' | 'ready' | 'failed'
 export type LibraryMedia = { id: string; originalName: string; mediaKind: MediaKind; importedAt: number; previewUrl: string | null; mediaUrl: string; previewStatus: PreviewStatus; previewError: string | null }
@@ -9,8 +10,8 @@ export type AlbumDetail = { id: string; title: string; folderId: string | null; 
 export type FolderSummary = { id: string; title: string; parentId: string | null; updatedAt: number; folderCount: number; albumCount: number; mediaCount: number }
 export type FolderTreeNode = { id: string; title: string; parentId: string | null; itemCount: number; children: FolderTreeNode[] }
 export type AlbumSummary = { id: string; title: string; mediaCount: number; updatedAt: number; coverPreviewUrl: string | null; coverPreviewPending: boolean }
-export type CoserSummary = { id: string; name: string; aliases: string[]; avatarUrl: string | null; albumCount: number; mediaCount: number; updatedAt: number }
-export type CoserDetail = CoserSummary & { albums: AlbumSummary[] }
+export type CoserSummary = { id: string; name: string; aliases: string[]; avatarUrl: string | null; albumCount: number; videoCount: number; mediaCount: number; updatedAt: number }
+export type CoserDetail = CoserSummary & { albums: AlbumSummary[]; videos: LibraryMedia[] }
 export type AvatarCrop = { left: number; top: number; size: number }
 export type FolderDetail = FolderSummary & { breadcrumbs: Array<{ id: string; title: string }>; folders: FolderSummary[]; albums: AlbumSummary[]; media: LibraryMedia[] }
 export type TrashItem = { entityType: 'media' | 'album' | 'folder' | 'orphan'; id: string; title: string; mediaKind: MediaKind | null; trashedAt: number; expiresAt: number; mediaCount: number; state: 'trashed' | 'pending_trash' | 'pending_restore'; failureReason: string | null }
@@ -31,6 +32,7 @@ const api = {
   media: {
     importFiles: (folderId: string | null = null): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-files', folderId),
     importFolders: (folderId: string | null = null): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-folders', folderId),
+    importDroppedFolders: (files: File[], destination: ImportDestination): Promise<ImportJobSummary> => ipcRenderer.invoke('media:import-dropped-folders', { paths: files.map((file) => webUtils.getPathForFile(file)), destination }),
     getJobs: (): Promise<ImportJobSummary[]> => ipcRenderer.invoke('media:get-jobs'),
     getJob: (jobId: string): Promise<ImportJobDetail> => ipcRenderer.invoke('media:get-job', jobId),
     retryJob: (jobId: string): Promise<ImportJobSummary> => ipcRenderer.invoke('media:retry-job', jobId),
@@ -77,6 +79,11 @@ const api = {
     createCoser: (name: string, aliases: string[]): Promise<CoserSummary> => ipcRenderer.invoke('media:create-coser', { name, aliases }),
     updateCoser: (id: string, name: string, aliases: string[]): Promise<CoserSummary> => ipcRenderer.invoke('media:update-coser', { id, name, aliases }),
     deleteCoser: (id: string): Promise<void> => ipcRenderer.invoke('media:delete-coser', id),
+    assignVideosCoser: (mediaIds: string[], coserId: string): Promise<{ count: number; operationId: string; expiresAt: number }> => ipcRenderer.invoke('media:assign-videos-coser', { mediaIds, coserId }),
+    undoVideoCoserAssignment: (operationId: string): Promise<void> => ipcRenderer.invoke('media:undo-video-coser-assignment', operationId),
+    unassignVideoCoser: (mediaId: string): Promise<void> => ipcRenderer.invoke('media:unassign-video-coser', mediaId),
+    assignAlbumsCoser: (albumIds: string[], coserId: string): Promise<{ count: number; operationId: string; expiresAt: number }> => ipcRenderer.invoke('media:assign-albums-coser', { albumIds, coserId }),
+    undoAlbumCoserAssignment: (operationId: string): Promise<void> => ipcRenderer.invoke('media:undo-album-coser-assignment', operationId),
     assignAlbumCoser: (albumId: string, coserId: string): Promise<void> => ipcRenderer.invoke('media:assign-album-coser', { albumId, coserId }),
     unassignAlbumCoser: (albumId: string): Promise<void> => ipcRenderer.invoke('media:unassign-album-coser', albumId),
     getCoserAvatarMedia: (coserId: string): Promise<LibraryMedia[]> => ipcRenderer.invoke('media:get-coser-avatar-media', coserId),

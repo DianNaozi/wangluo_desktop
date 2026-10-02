@@ -4,9 +4,11 @@ import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createDatabase } from './database'
+import { validateDroppedFolderPaths } from './drop-paths'
 import type { AlbumDetail, CoserDetail, CoserSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
 
-type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null }
+type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null; coserId?: string }
+export type ImportDestination = { type: 'library' } | { type: 'folder'; folderId: string } | { type: 'coser'; coserId: string }
 type PendingRequest = { resolve(value: unknown): void; reject(reason: Error): void }
 type Service = 'import' | 'preview'
 type SourceDisposalRequest = { entryId: string; sourcePath: string; sourceRootPath: string | null; sourceSize: number; sourceModifiedAt: number }
@@ -161,6 +163,18 @@ export class ImportManager {
     const result = await dialog.showOpenDialog(owner, { title: '导入文件夹', properties: ['openDirectory', 'multiSelections'] })
     return result.canceled || !result.filePaths.length ? null : this.request<ImportJobSummary>('plan', result.filePaths.map((path) => ({ path, kind: 'folder', folderId } satisfies Source)))
   }
+  async importDroppedFolders(rawPaths: unknown, rawDestination: unknown): Promise<ImportJobSummary> {
+    if (!rawDestination || typeof rawDestination !== 'object') throw new Error('导入位置无效，请重新拖入文件夹')
+    const destination = rawDestination as Record<string, unknown>
+    let target: Pick<Source, 'folderId' | 'coserId'>
+    if (destination.type === 'library') target = { folderId: null }
+    else if (destination.type === 'folder' && typeof destination.folderId === 'string' && destination.folderId.length > 0) target = { folderId: destination.folderId }
+    else if (destination.type === 'coser' && typeof destination.coserId === 'string' && destination.coserId.length > 0) target = { coserId: destination.coserId }
+    else throw new Error('导入位置无效，请重新拖入文件夹')
+
+    const paths = await validateDroppedFolderPaths(rawPaths, this.storagePath)
+    return this.request<ImportJobSummary>('plan', paths.map((path) => ({ path, kind: 'folder', ...target } satisfies Source)))
+  }
   getJobs(): Promise<ImportJobSummary[]> { return this.request('get-jobs') }
   getJob(jobId: string): Promise<ImportJobDetail> { return this.request('get-job', jobId) }
   getLibrary(): Promise<LibrarySnapshot> { return this.request('get-library') }
@@ -179,6 +193,11 @@ export class ImportManager {
   updateCoser(id: string, name: string, aliases: string[]): Promise<CoserSummary> { return this.request('update-coser', { id, name, aliases }) }
   setCoserAvatar(id: string, updatedAt: number | null): Promise<void> { return this.request('set-coser-avatar', { id, updatedAt }) }
   deleteCoser(id: string): Promise<void> { return this.request('delete-coser', id) }
+  assignVideosCoser(mediaIds: string[], coserId: string): Promise<{ count: number; operationId: string; expiresAt: number }> { return this.request('assign-videos-coser', { mediaIds, coserId }) }
+  undoVideoCoserAssignment(operationId: string): Promise<void> { return this.request('undo-video-coser-assignment', operationId) }
+  unassignVideoCoser(mediaId: string): Promise<void> { return this.request('unassign-video-coser', mediaId) }
+  assignAlbumsCoser(albumIds: string[], coserId: string): Promise<{ count: number; operationId: string; expiresAt: number }> { return this.request('assign-albums-coser', { albumIds, coserId }) }
+  undoAlbumCoserAssignment(operationId: string): Promise<void> { return this.request('undo-album-coser-assignment', operationId) }
   assignAlbumCoser(albumId: string, coserId: string): Promise<void> { return this.request('assign-album-coser', { albumId, coserId }) }
   unassignAlbumCoser(albumId: string): Promise<void> { return this.request('unassign-album-coser', albumId) }
   getTrash(): Promise<TrashSnapshot> { return this.request('get-trash') }

@@ -5,6 +5,10 @@
   "main": "./out/main/index.js",
   "type": "module",
   "scripts": {
+    "check:media": "node scripts/check-media-tools.mjs",
+    "repair:media": "node scripts/check-media-tools.mjs --repair",
+    "predev": "npm run check:media",
+    "prebuild": "npm run check:media",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "typecheck": "npm run typecheck:main && npm run typecheck:web",

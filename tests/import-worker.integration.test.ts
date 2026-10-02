@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { execFile, spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -15,9 +15,8 @@ type Library = { totals: { all: number }; albums: Array<{ id: string; coverPrevi
 type FolderTree = Array<{ id: string; title: string; parentId: string | null; itemCount: number; children: FolderTree }>
 type Trash = { items: Array<{ id: string; entityType: string }> }
 type StorageEligibility = { canChangeResourceDirectory: boolean; reason: string | null }
-type Coser = { id: string; name: string; aliases: string[]; albumCount: number; mediaCount: number; albums?: Array<{ id: string }> }
+type Coser = { id: string; name: string; aliases: string[]; albumCount: number; videoCount: number; mediaCount: number; albums?: Array<{ id: string }> }
 const runFile = promisify(execFile)
-const canRunFfmpeg = Boolean(ffmpegPath) && spawnSync(ffmpegPath!, ['-version'], { windowsHide: true }).status === 0
 
 class ImportWorkerClient {
   private readonly pending = new Map<string, { resolve(value: unknown): void; reject(reason: Error): void }>()
@@ -242,12 +241,44 @@ describe('import worker integration', () => {
     } finally { await previewClient.dispose() }
   })
 
-  ;(canRunFfmpeg ? it : it.skip)('generates a WebP preview for an imported MP4', async () => {
+  it('assigns dropped folder albums to the selected Coser in the import plan', async () => {
+    const coser = await client.request<Coser>('create-coser', { name: '拖放测试', aliases: [] })
+    const sourceDirectory = join(root, '落日写真')
+    await mkdir(join(sourceDirectory, '子目录'), { recursive: true })
+    await writeFile(join(sourceDirectory, '照片 1.jpg'), 'test photo')
+    await writeFile(join(sourceDirectory, '子目录', '照片 2.jpg'), 'nested test photo')
+
+    const job = await client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder', coserId: coser.id }])
+    await waitFor(() => client.request<Job[]>('get-jobs'), (jobs) => jobs.some((item) => item.id === job.id && item.status === 'completed'))
+
+    const detail = await client.request<Coser>('get-coser', coser.id)
+    expect(detail.albums).toHaveLength(1)
+    const album = await client.request<{ folderId: string | null; media: unknown[] }>('get-album', detail.albums![0]!.id)
+    expect(album).toMatchObject({ folderId: null })
+    expect(album.media).toHaveLength(2)
+  })
+
+  it('rejects a deleted Coser before creating an import job', async () => {
+    const sourceDirectory = join(root, 'missing-coser-album')
+    await mkdir(sourceDirectory)
+    await writeFile(join(sourceDirectory, 'photo.jpg'), 'test photo')
+
+    await expect(client.request<Job>('plan', [{ path: sourceDirectory, kind: 'folder', coserId: randomUUID() }])).rejects.toThrow('目标 Coser 不存在或已删除')
+    expect(await client.request<Job[]>('get-jobs')).toHaveLength(0)
+  })
+
+  it.each([false, true])('generates an MP4 preview, recovering an executable failure: %s', async (recoverFailure) => {
     const source = join(root, 'sample.mp4')
     await runFile(ffmpegPath!, ['-y', '-f', 'lavfi', '-i', 'testsrc=size=320x180:rate=25', '-t', '1', '-pix_fmt', 'yuv420p', source], { windowsHide: true })
     await client.request<Job>('plan', [{ path: source, kind: 'file' }])
     await waitFor(() => client.request<Job[]>('get-jobs'), (jobs) => jobs.some((job) => job.status === 'completed'))
 
+    if (recoverFailure) {
+      const { sqlite } = createDatabase(join(root, 'gallery.sqlite'))
+      try {
+        sqlite.prepare("UPDATE media_items SET preview_status = 'failed', preview_error = 'FFmpeg：spawn EFTYPE' WHERE media_kind = 'video'").run()
+      } finally { sqlite.close() }
+    }
     const previewClient = new PreviewWorkerClient(join(root, 'gallery.sqlite'), root)
     try {
       await previewClient.request<boolean>('wake')
@@ -255,7 +286,7 @@ describe('import worker integration', () => {
       const media = library.looseMedia[0]!
       expect(media.previewUrl).toMatch(/^gallery-thumb:\/\//)
       const thumbnailHash = new URL(media.previewUrl!).hostname
-      const metadata = await sharp(join(root, 'thumbnails', `${thumbnailHash}.webp`)).metadata()
+      const metadata = await sharp(await readFile(join(root, 'thumbnails', `${thumbnailHash}.webp`))).metadata()
       expect(metadata.format).toBe('webp')
       expect(metadata.width).toBeGreaterThan(0)
       expect(metadata.height).toBeGreaterThan(0)
@@ -434,6 +465,80 @@ describe('import worker integration', () => {
     expect(await client.request<{ folderId: string | null }>('get-album', folder.albums[0]!.id)).toMatchObject({ folderId: target.id })
   })
 
+  it('moves standalone videos into Coser, undoes placement and restores trash ownership', async () => {
+    const folder = await client.request<{ id: string }>('create-folder', { title: 'Videos', parentId: null })
+    const source = join(root, 'clip.mp4'); await writeFile(source, 'video fixture')
+    const job = await client.request<Job>('plan', [{ path: source, kind: 'file', folderId: folder.id }])
+    await waitFor(() => client.request<Job[]>('get-jobs'), jobs => jobs.some(item => item.id === job.id && item.status === 'completed'))
+    const detail = await client.request<{ media: Array<{ id: string }>; mediaCount: number }>('get-folder', folder.id)
+    const id = detail.media[0]!.id
+    const coser = await client.request<Coser>('create-coser', { name: 'Video owner', aliases: [] })
+    const assign = () => client.request<{ operationId: string }>('assign-videos-coser', { mediaIds: [id], coserId: coser.id })
+    const receipt = await assign()
+    expect(await client.request('get-coser', coser.id)).toMatchObject({ videoCount: 1, mediaCount: 1, albumCount: 0, videos: [{ id }] })
+    expect(await client.request<Coser[]>('get-cosers')).toContainEqual(expect.objectContaining({ id: coser.id, videoCount: 1, mediaCount: 1 }))
+    expect(await client.request('get-folder', folder.id)).toMatchObject({ mediaCount: 0, media: [] })
+    expect((await client.request<FolderTree>('get-folder-tree'))[0]!.itemCount).toBe(0)
+    expect((await client.request<Library>('get-library')).looseMedia).toHaveLength(0)
+    await client.request('undo-video-coser-assignment', receipt.operationId)
+    expect(await client.request('get-folder', folder.id)).toMatchObject({ mediaCount: 1 })
+    await assign()
+    await client.request('trash-media', id)
+    expect(await client.request('get-coser', coser.id)).toMatchObject({ videoCount: 0, mediaCount: 0 })
+    expect(await client.request<Coser[]>('get-cosers')).toContainEqual(expect.objectContaining({ id: coser.id, videoCount: 0, mediaCount: 0 }))
+    await client.request('restore-media', id)
+    expect(await client.request('get-coser', coser.id)).toMatchObject({ videos: [{ id }] })
+    await client.request('unassign-video-coser', id)
+    expect((await client.request<Library>('get-library')).looseMedia).toHaveLength(1)
+    await assign()
+    await client.request('move-media', { mediaId: id, folderId: folder.id })
+    expect(await client.request('get-coser', coser.id)).toMatchObject({ videoCount: 0 })
+    await assign()
+    await client.request('trash-media', id); await client.request('delete-coser', coser.id); await client.request('restore-media', id)
+    expect((await client.request<Library>('get-library')).looseMedia.map(item => item.id)).toEqual([id])
+  })
+
+  it('deduplicates Coser media counts and removes direct placement on duplicate album import', async () => {
+    const source = join(root, 'shared.mp4'); await writeFile(source, 'same video')
+    const job = await client.request<Job>('plan', [{ path: source, kind: 'file' }])
+    await waitFor(() => client.request<Job[]>('get-jobs'), jobs => jobs.some(item => item.id === job.id && item.status === 'completed'))
+    const id = (await client.request<Library>('get-library')).looseMedia[0]!.id
+    const coser = await client.request<Coser>('create-coser', { name: 'Shared', aliases: [] })
+    await client.request('assign-videos-coser', { mediaIds: [id], coserId: coser.id })
+    for (const name of ['first', 'second']) {
+      const directory = join(root, name); await mkdir(directory); await writeFile(join(directory, 'shared.mp4'), 'same video')
+      const next = await client.request<Job>('plan', [{ path: directory, kind: 'folder' }])
+      await waitFor(() => client.request<Job[]>('get-jobs'), jobs => jobs.some(item => item.id === next.id && item.status === 'completed'))
+    }
+    const albums = (await client.request<Library>('get-library')).albums
+    await client.request('assign-albums-coser', { albumIds: albums.map(item => item.id), coserId: coser.id })
+    expect(await client.request('get-coser', coser.id)).toMatchObject({ videoCount: 0, videos: [], albumCount: 2, mediaCount: 1 })
+    expect(await client.request<Coser[]>('get-cosers')).toContainEqual(expect.objectContaining({ id: coser.id, videoCount: 0, albumCount: 2, mediaCount: 1 }))
+    await expect(client.request('assign-videos-coser', { mediaIds: [id], coserId: coser.id })).rejects.toThrow('图集')
+  })
+
+  it('returns grouped summaries for a library with 20 Cosers and 200 albums', async () => {
+    const db = createDatabase(join(root, 'gallery.sqlite')).sqlite
+    const now = Date.now()
+    const coserRows = Array.from({ length: 20 }, (_, index) => ({ id: randomUUID(), name: `Coser ${index}`, key: `coser-${index}` }))
+    const insertCoser = db.prepare('INSERT INTO cosers (id, name, name_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    const insertAlbum = db.prepare('INSERT INTO albums (id, title, created_at, updated_at, coser_id) VALUES (?, ?, ?, ?, ?)')
+    db.transaction(() => {
+      coserRows.forEach((coser, index) => insertCoser.run(coser.id, coser.name, coser.key, now + index, now + index))
+      for (let index = 0; index < 200; index += 1) {
+        const coser = coserRows[index % coserRows.length]!
+        insertAlbum.run(randomUUID(), `Album ${index}`, now + index, now + index, coser.id)
+      }
+    })()
+    db.close()
+
+    const summaries = await client.request<Coser[]>('get-cosers')
+    expect(summaries).toHaveLength(20)
+    expect(summaries.every((coser) => coser.albumCount === 10 && coser.videoCount === 0 && coser.mediaCount === 0)).toBe(true)
+    const detail = await client.request<Coser & { albums: Array<{ id: string }> }>('get-coser', coserRows[0]!.id)
+    expect(detail.albums).toHaveLength(10)
+  })
+
   it('groups an album under one Coser and hides it from folders and the library', async () => {
     const target = await client.request<{ id: string }>('create-folder', { title: '待归类', parentId: null })
     const sourceDirectory = join(root, 'coser-album')
@@ -452,6 +557,7 @@ describe('import worker integration', () => {
     expect((await client.request<Library>('get-library')).albums).not.toContainEqual(expect.objectContaining({ id: albumId }))
     expect((await client.request<{ albums: Array<{ id: string }> }>('get-folder', target.id)).albums).toHaveLength(0)
     expect(await client.request<Coser>('get-coser', coser.id)).toMatchObject({ id: coser.id, albumCount: 1, mediaCount: 1, albums: [{ id: albumId }] })
+    expect(await client.request<Coser[]>('get-cosers')).toContainEqual(expect.objectContaining({ id: coser.id, aliases: ['Yuzu', '柚子'], albumCount: 1, videoCount: 0, mediaCount: 1 }))
 
     await client.request('unassign-album-coser', albumId)
     expect((await client.request<Library>('get-library')).albums).toContainEqual(expect.objectContaining({ id: albumId }))

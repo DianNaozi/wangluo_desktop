@@ -1,5 +1,6 @@
 export type MediaKind = 'image' | 'video' | 'file';
 export type ImportJobStatus = 'planned' | 'queued' | 'running' | 'completed' | 'partial_failed' | 'interrupted';
+export type ImportDestination = { type: 'library' } | { type: 'folder'; folderId: string } | { type: 'coser'; coserId: string };
 export type ImportEntryStatus = 'planned' | 'hashing' | 'copying' | 'imported' | 'duplicate' | 'skipped' | 'failed';
 export type PreviewStatus = 'not_requested' | 'pending' | 'generating' | 'ready' | 'failed';
 export type LibraryMedia = {
@@ -44,6 +45,7 @@ export type AlbumSummary = {
     coverPreviewPending: boolean;
 };
 export type CoserSummary = {
+    videoCount: number;
     id: string;
     name: string;
     aliases: string[];
@@ -53,6 +55,7 @@ export type CoserSummary = {
     updatedAt: number;
 };
 export type CoserDetail = CoserSummary & {
+    videos: LibraryMedia[];
     albums: AlbumSummary[];
 };
 export type AvatarCrop = {

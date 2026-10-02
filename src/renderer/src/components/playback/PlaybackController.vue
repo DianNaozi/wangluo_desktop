@@ -5,6 +5,7 @@ import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { usePlaybackStore } from '@/stores/playback'
 import { shouldRestartVideo } from '@/utils/playback-player'
+import VideoPlayer from './VideoPlayer.vue'
 import PlaybackImageStage from './PlaybackImageStage.vue'
 
 const playback = usePlaybackStore()
@@ -23,7 +24,7 @@ const nextImageUrl = computed(() => {
 })
 const progress = ref(0)
 const playerItem = computed(() => playback.currentItem)
-const videoElement = ref<HTMLVideoElement | null>(null)
+const videoPlayer = ref<InstanceType<typeof VideoPlayer> | null>(null)
 
 function toggleControls(): void {
   controlsVisible.value = !controlsVisible.value
@@ -37,7 +38,7 @@ watch(() => playback.playerOpen, (open) => {
   if (open) void nextTick(() => playerSurface.value?.focus({ preventScroll: true }))
 })
 
-watch(() => Boolean(playback.playerOpen && playerItem.value), (active) => {
+watch(() => Boolean(playback.playerOpen && playerItem.value?.type === 'image'), (active) => {
   fullscreenError.value = ''
   const request = active ? window.api.playback.enterFullscreen() : window.api.playback.exitFullscreen()
   void request.catch((error: unknown) => {
@@ -50,8 +51,9 @@ watch(() => [playback.playerOpen, playerItem.value?.id], () => {
   clearTimer()
   imageReady.value = false
   playbackError.value = ''
-  videoElement.value?.pause()
 }, { flush: 'sync' })
+
+watch(playerSurface, surface => { surface?.focus({ preventScroll: true }) }, { flush: 'post' })
 
 function imageLoaded(id: string): void {
   if (id === playerItem.value?.id) imageReady.value = true
@@ -78,30 +80,19 @@ function schedule(): void {
     if (playback.queue.length === 1 && playback.loop) schedule()
   }, seconds * 1000)
 }
-function updateVideoProgress(): void {
-  const video = videoElement.value
-  if (video?.duration) progress.value = Math.min(100, (video.currentTime / video.duration) * 100)
-}
-function syncVideoPlayback(): void {
-  const video = videoElement.value
-  const mediaId = playerItem.value?.id
-  if (!video || !mediaId || playerItem.value?.type !== 'video') return
-  if (playback.isPlaying) void video.play().catch(() => { if (videoElement.value === video && playerItem.value?.id === mediaId) playback.isPlaying = false })
-  else video.pause()
-}
 function handleVideoEnded(): void {
   if (shouldRestartVideo(playback.queue.length, playback.loop)) {
-    const video = videoElement.value
-    if (video) video.currentTime = 0
-    syncVideoPlayback()
+    playback.isPlaying = true
+    videoPlayer.value?.restart()
     return
   }
+  const continues = playback.currentIndex < playback.queue.length - 1 || playback.loop
   playback.next()
+  if (continues) playback.isPlaying = true
 }
-watch(() => [playback.playerOpen, playback.isPlaying, playback.currentIndex, playback.imageIntervalSeconds, playerItem.value?.id, imageReady.value], () => { schedule(); void nextTick(syncVideoPlayback) }, { immediate: true })
+watch(() => [playback.playerOpen, playback.isPlaying, playback.currentIndex, playback.imageIntervalSeconds, playerItem.value?.id, imageReady.value], () => { schedule() }, { immediate: true })
 onBeforeUnmount(() => {
   clearTimer()
-  videoElement.value?.pause()
   void window.api.playback.exitFullscreen().catch(() => {})
 })
 </script>
@@ -116,7 +107,7 @@ onBeforeUnmount(() => {
       role="dialog"
       aria-modal="true"
       aria-label="媒体播放"
-      @keydown.esc.stop.prevent="playback.playerOpen = false"
+      @keydown.esc="() => { if (playerItem.type === 'image') playback.playerOpen = false }"
     >
       <PlaybackImageStage
         v-if="playerItem.type === 'image'"
@@ -128,18 +119,20 @@ onBeforeUnmount(() => {
         @ready="imageLoaded"
         @error="imageFailed"
       />
-      <video
-        v-else
-        :key="playerItem.id"
-        ref="videoElement"
-        :src="playerItem.mediaUrl"
-        class="absolute inset-0 size-full object-contain"
-        autoplay
-        playsinline
-        @ended="handleVideoEnded"
-        @timeupdate="updateVideoProgress"
-        @error="imageFailed('无法播放此视频，可切换到下一项')"
-      />
+      <VideoPlayer v-else :key="playerItem.id" ref="videoPlayer" :src="playerItem.mediaUrl" :title="playerItem.title" :subtitle="`${playerItem.source} · ${playback.currentIndex + 1} / ${playback.queue.length}`" :poster="playerItem.previewUrl" v-model:playing="playback.isPlaying" navigation :can-previous="playback.currentIndex > 0 || playback.loop" :can-next="playback.currentIndex < playback.queue.length - 1 || playback.loop" @previous="playback.previous" @next="playback.next" @ended="handleVideoEnded" @close="playback.playerOpen = false">
+        <template #header><button class="grid size-9 place-items-center rounded-lg hover:bg-white/10" aria-label="播放队列" :aria-expanded="showQueue" @click="showQueue = !showQueue"><ListVideo :size="19" /></button></template>
+        <template #controls><button class="grid size-9 place-items-center rounded-lg hover:bg-white/10" :class="playback.loop ? 'text-violet-300' : 'text-white/50'" aria-label="循环播放" :aria-pressed="playback.loop" @click="playback.loop = !playback.loop"><Repeat2 :size="18" /></button></template>
+      <aside v-if="showQueue" class="absolute inset-y-0 right-0 flex w-full max-w-sm flex-col border-l border-white/15 bg-zinc-950/90 p-5 backdrop-blur">
+        <div class="flex items-center justify-between"><h4 class="font-semibold">播放队列</h4><button aria-label="关闭播放队列" @click="showQueue = false"><X :size="18" /></button></div>
+        <div class="mt-4 min-h-0 flex-1 space-y-1 overflow-y-auto">
+          <button v-for="(item, index) in playback.queue" :key="item.id" :class="['flex w-full items-center gap-3 rounded-lg p-2 text-left', index === playback.currentIndex ? 'bg-white/15' : 'hover:bg-white/10']" @click="playback.jump(index)">
+            <span class="text-xs text-white/60">{{ index + 1 }}</span>
+            <span class="min-w-0"><span class="block truncate text-sm">{{ item.title }}</span><span class="block truncate text-xs text-white/60">{{ item.source }}</span></span>
+          </button>
+        </div>
+      </aside>
+      </VideoPlayer>
+      <template v-if="playerItem.type === 'image'">
       <button
         ref="playerSurface"
         class="absolute inset-0 size-full focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white/60"
@@ -171,7 +164,7 @@ onBeforeUnmount(() => {
               <button class="pointer-events-auto grid size-10 place-items-center rounded-full bg-black/40 hover:bg-white/20" aria-label="下一项" @click="playback.next"><SkipForward :size="19" /></button>
               <button class="pointer-events-auto ml-3 grid size-10 place-items-center rounded-full" :class="playback.loop ? 'bg-violet-500 text-white' : 'bg-black/40 text-white/75 hover:bg-white/20'" aria-label="循环播放" :aria-pressed="playback.loop" @click="playback.loop = !playback.loop"><Repeat2 :size="18" /></button>
             </div>
-            <p class="mt-3 text-center text-xs text-white/65">{{ playerItem.type === 'video' ? '视频播放结束后切换' : `图片停留 ${playback.imageIntervalSeconds} 秒` }} · 点击画面隐藏控件</p>
+            <p class="mt-3 text-center text-xs text-white/65">图片停留 {{ playback.imageIntervalSeconds }} 秒 · 点击画面隐藏控件</p>
           </div>
         </footer>
       </template>
@@ -184,6 +177,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </aside>
+      </template>
     </div>
   </Teleport>
 </template>

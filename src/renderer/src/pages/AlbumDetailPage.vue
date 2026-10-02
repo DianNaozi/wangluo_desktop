@@ -87,8 +87,8 @@ function trashMedia(id: string, name: string): void { trashTarget.value = { id, 
 function openViewer(id: string): void { viewerMediaId.value = id }
 function addAlbumToQueue(): void { if (album.value) playback.addMediaBatch(sortedMedia.value, album.value.title) }
 function trashAlbum(): void { if (album.value) trashTarget.value = { id: album.value.id, name: album.value.title, isAlbum: true } }
-function goUp(): void { void router.push(albumParentRoute(album.value?.folderId ?? null)) }
-async function confirmTrash(): Promise<void> { const target = trashTarget.value; if (!target) return; trashTarget.value = null; if (target.isAlbum) { const parentRoute = albumParentRoute(album.value?.folderId ?? null); await window.api.media.trashAlbum(target.id); await router.push(parentRoute) } else { await window.api.media.trashMedia(target.id); await load() } }
+function goUp(): void { void router.push(albumParentRoute(album.value?.folderId ?? null, route.query.fromCoser)) }
+async function confirmTrash(): Promise<void> { const target = trashTarget.value; if (!target) return; trashTarget.value = null; if (target.isAlbum) { const parentRoute = albumParentRoute(album.value?.folderId ?? null, route.query.fromCoser); await window.api.media.trashAlbum(target.id); await router.push(parentRoute) } else { await window.api.media.trashMedia(target.id); await load() } }
 </script>
 
 <template>

@@ -155,6 +155,22 @@ const migrations: Array<{ id: string; sql: string }> = [
       ALTER TABLE cosers ADD COLUMN avatar_updated_at INTEGER;
     `
   }
+  ,{
+    id: '0010_coser_videos',
+    sql: `
+      ALTER TABLE media_items ADD COLUMN coser_id TEXT REFERENCES cosers(id) ON DELETE SET NULL;
+      CREATE INDEX media_items_coser_state_imported_idx ON media_items(coser_id, trash_state, imported_at);
+      CREATE TRIGGER album_video_placement_insert AFTER INSERT ON album_items
+      WHEN EXISTS (SELECT 1 FROM albums WHERE id = NEW.album_id AND trash_state = 'active') BEGIN
+        UPDATE media_items SET coser_id = NULL WHERE id = NEW.media_id AND coser_id IS NOT NULL;
+      END;
+      CREATE TRIGGER album_video_placement_restore AFTER UPDATE OF trash_state ON albums
+      WHEN NEW.trash_state = 'active' BEGIN
+        UPDATE media_items SET coser_id = NULL WHERE coser_id IS NOT NULL
+          AND id IN (SELECT media_id FROM album_items WHERE album_id = NEW.id);
+      END;
+    `
+  }
 ]
 
 export type GalleryDatabase = { sqlite: Database.Database; db: BetterSQLite3Database }

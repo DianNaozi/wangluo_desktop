@@ -2,7 +2,7 @@ import sharp from 'sharp'
 import ffmpegPath from 'ffmpeg-static'
 import ffprobeStatic from 'ffprobe-static'
 import { randomUUID } from 'node:crypto'
-import { access, mkdir, rename, rm } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 import { createDatabase } from './database'
@@ -58,7 +58,10 @@ async function createVideoPreview(input: string, output: string): Promise<void> 
   const probe = await getDuration(input)
   const offset = probe.duration ? Math.max(0, Math.min(probe.duration * 0.1, Math.max(0, probe.duration - 0.05))) : 0
   const writeFrame = async (at: number): Promise<void> => {
-    await runBoundedProcess(ffmpegExecutable, ['-y', '-ss', String(at), '-i', input, '-frames:v', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease', '-c:v', 'libwebp', '-q:v', '82', output], { timeoutMs: FFMPEG_TIMEOUT_MS, maxOutputBytes: MAX_PROCESS_OUTPUT_BYTES })
+    await runBoundedProcess(ffmpegExecutable, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-ss', String(at), '-i', input, '-frames:v', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease', '-c:v', 'libwebp', '-q:v', '82', output], { timeoutMs: FFMPEG_TIMEOUT_MS, maxOutputBytes: MAX_PROCESS_OUTPUT_BYTES })
+    // FFmpeg can exit successfully without emitting a frame after seeking.
+    const metadata = await sharp(await readFile(output)).metadata()
+    if (!metadata.width || !metadata.height) throw new Error('视频截帧未生成有效图片')
   }
   try { await writeFrame(offset) } catch (error) {
     if (offset <= 0) throw new Error(`${probe.error ? `FFprobe：${probe.error}\n` : ''}FFmpeg：${errorMessage(error)}`)
@@ -142,5 +145,17 @@ async function handleRequest(request: Request): Promise<void> {
   } catch (error) { replyError(request.id, error) }
 }
 
-parent.on('message', (request: Request) => { void handleRequest(request) })
-schedule(0)
+async function initialize(): Promise<void> {
+  // Retry only executable-start failures, once on startup after the binary is
+  // repaired. Invalid media must not be retried in an endless queue.
+  try {
+    await runBoundedProcess(ffmpegExecutable, ['-version'], { timeoutMs: FFPROBE_TIMEOUT_MS, maxOutputBytes: MAX_PROCESS_OUTPUT_BYTES })
+    sqlite.prepare(`UPDATE media_items SET preview_status = 'pending', preview_error = NULL
+      WHERE trash_state = 'active' AND media_kind = 'video' AND preview_status = 'failed'
+      AND (preview_error LIKE '%spawn%EFTYPE%' OR preview_error LIKE '%spawn%ENOENT%'
+        OR preview_error LIKE '%spawn%EACCES%' OR preview_error LIKE '%spawn%ENOEXEC%')`).run()
+  } catch { /* Individual video tasks retain their failure details; images still work. */ }
+  parent.on('message', (request: Request) => { void handleRequest(request) })
+  schedule(0)
+}
+void initialize()

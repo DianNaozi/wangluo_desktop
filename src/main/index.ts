@@ -8,6 +8,7 @@ import { ImportManager } from './import/import-manager'
 import { createMediaResponse } from './media-response'
 import { createPlaybackFullscreen } from './playback-fullscreen'
 
+const startupStartedAt = Date.now()
 const playbackFullscreen = new WeakMap<BrowserWindow, ReturnType<typeof createPlaybackFullscreen>>()
 
 let importManager: ImportManager
@@ -114,6 +115,9 @@ function createWindow(): void {
   window.webContents.setWindowOpenHandler(({ url }) => { void shell.openExternal(url); return { action: 'deny' } })
   const setPlaybackFullscreen = createPlaybackFullscreen(window)
   playbackFullscreen.set(window, setPlaybackFullscreen)
+  window.once('ready-to-show', () => {
+    if (process.env['ELECTRON_RENDERER_URL']) console.info(`[startup-perf] window ready to show: ${Math.round(Date.now() - startupStartedAt)} ms after main process start`)
+  })
   window.webContents.on('render-process-gone', () => { void setPlaybackFullscreen(false).catch(() => {}) })
   window.webContents.on('did-start-loading', () => { void setPlaybackFullscreen(false).catch(() => {}) })
   if (process.env['ELECTRON_RENDERER_URL']) void window.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -135,6 +139,7 @@ app.whenReady().then(async () => {
   resourceRoot = directory.path
   deleteSourcesAfterImport = settings.deleteSourcesAfterImport === true
   await startImportManager(resourceRoot, deleteSourcesAfterImport)
+  if (process.env['ELECTRON_RENDERER_URL']) console.info(`[startup-perf] media services initialized: ${Math.round(Date.now() - startupStartedAt)} ms after main process start`)
   protocol.handle('gallery-thumb', async (request) => {
     const hash = new URL(request.url).hostname
     if (!/^[a-f0-9]{64}$/.test(hash)) return new Response('Not found', { status: 404 })
@@ -164,6 +169,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('media:import-files', (event, folderId: string | null = null) => importManager.importFiles(BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()!, folderId))
   ipcMain.handle('media:import-folders', (event, folderId: string | null = null) => importManager.importFolders(BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow()!, folderId))
+  ipcMain.handle('media:import-dropped-folders', (_event, payload: { paths: unknown; destination: unknown }) => importManager.importDroppedFolders(payload?.paths, payload?.destination))
   ipcMain.handle('media:get-jobs', () => importManager.getJobs())
   ipcMain.handle('media:get-job', (_event, jobId: string) => importManager.getJob(jobId))
   ipcMain.handle('media:get-library', () => importManager.getLibrary())
@@ -179,6 +185,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('media:create-coser', (_event, payload: { name: string; aliases: string[] }) => importManager.createCoser(payload.name, payload.aliases))
   ipcMain.handle('media:update-coser', (_event, payload: { id: string; name: string; aliases: string[] }) => importManager.updateCoser(payload.id, payload.name, payload.aliases))
   ipcMain.handle('media:delete-coser', async (_event, coserId: string) => { await importManager.deleteCoser(coserId); await rm(avatarPath(coserId), { force: true }) })
+  ipcMain.handle('media:assign-videos-coser', (_event, payload: { mediaIds: string[]; coserId: string }) => importManager.assignVideosCoser(payload?.mediaIds, payload?.coserId))
+  ipcMain.handle('media:undo-video-coser-assignment', (_event, operationId: string) => importManager.undoVideoCoserAssignment(operationId))
+  ipcMain.handle('media:unassign-video-coser', (_event, mediaId: string) => importManager.unassignVideoCoser(mediaId))
+  ipcMain.handle('media:assign-albums-coser', (_event, payload: { albumIds: string[]; coserId: string }) => importManager.assignAlbumsCoser(payload?.albumIds, payload?.coserId))
+  ipcMain.handle('media:undo-album-coser-assignment', (_event, operationId: string) => importManager.undoAlbumCoserAssignment(operationId))
   ipcMain.handle('media:assign-album-coser', (_event, payload: { albumId: string; coserId: string }) => importManager.assignAlbumCoser(payload.albumId, payload.coserId))
   ipcMain.handle('media:unassign-album-coser', (_event, albumId: string) => importManager.unassignAlbumCoser(albumId))
   ipcMain.handle('coser:save-avatar', (_event, payload: { coserId: string; mediaId: string; crop: AvatarCrop }) => saveCoserAvatar(payload.coserId, payload.mediaId, payload.crop))

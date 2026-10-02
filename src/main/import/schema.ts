@@ -43,6 +43,7 @@ export const importEntries = sqliteTable('import_entries', {
 }, (table) => [index('import_entries_job_status_idx').on(table.jobId, table.status)])
 
 export const mediaItems = sqliteTable('media_items', {
+  coserId: text('coser_id').references(() => cosers.id, { onDelete: 'set null' }),
   id: text('id').primaryKey(),
   contentHash: text('content_hash').notNull(),
   mediaKind: text('media_kind').notNull(),
@@ -58,7 +59,7 @@ export const mediaItems = sqliteTable('media_items', {
   trashState: text('trash_state').notNull().default('active'),
   trashedAt: integer('trashed_at'),
   importedAt: integer('imported_at').notNull()
-}, (table) => [uniqueIndex('media_items_content_hash_unique').on(table.contentHash), index('media_items_kind_imported_at_idx').on(table.mediaKind, table.importedAt)])
+}, (table) => [uniqueIndex('media_items_content_hash_unique').on(table.contentHash), index('media_items_kind_imported_at_idx').on(table.mediaKind, table.importedAt), index('media_items_coser_state_imported_idx').on(table.coserId, table.trashState, table.importedAt)])
 
 export const albums = sqliteTable('albums', {
   id: text('id').primaryKey(),

@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { CheckCircle2, FileWarning, FolderInput, LoaderCircle, RefreshCw, Upload } from 'lucide-vue-next'
 import Button from '@/components/ui/Button.vue'
 import { useImportStore } from '@/stores/imports'
 
 const imports = useImportStore()
-onMounted(() => { void imports.refresh() })
 const shownJobs = computed(() => imports.jobs.slice(0, 5))
 const formatSize = (bytes: number): string => bytes < 1024 * 1024 ? `${Math.max(0, Math.round(bytes / 1024))} KB` : bytes < 1024 * 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 const statusText: Record<ImportJobStatus, string> = { planned: '已规划', queued: '等待执行', running: '导入中', completed: '已完成', partial_failed: '部分失败', interrupted: '已中断' }

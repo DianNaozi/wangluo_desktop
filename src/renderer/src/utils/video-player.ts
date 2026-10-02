@@ -1,0 +1,16 @@
+export function videoTime(seconds: number): string {
+  const value = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0
+  const hours = Math.floor(value / 3600)
+  const minutes = Math.floor(value / 60) % 60
+  return `${hours ? `${hours}:` : ''}${hours ? String(minutes).padStart(2, '0') : minutes}:${String(value % 60).padStart(2, '0')}`
+}
+
+export function seekTime(value: number, duration: number): number | null {
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(value)) return null
+  return Math.max(0, Math.min(duration, value))
+}
+
+export function videoShortcut(key: string): 'play' | 'back' | 'forward' | 'mute' | 'fullscreen' | 'escape' | null {
+  const actions: Record<string, 'play' | 'back' | 'forward' | 'mute' | 'fullscreen' | 'escape'> = { ' ': 'play', ArrowLeft: 'back', ArrowRight: 'forward', m: 'mute', f: 'fullscreen', Escape: 'escape' }
+  return actions[key.length === 1 ? key.toLowerCase() : key] ?? null
+}
