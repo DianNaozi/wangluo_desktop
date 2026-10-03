@@ -3,10 +3,12 @@
 const { app, BrowserWindow, screen } = require('electron')
 const { mkdtempSync, rmSync } = require('node:fs')
 const { tmpdir } = require('node:os')
-const { join, resolve } = require('node:path')
+const { basename, dirname, join, resolve } = require('node:path')
 const { pathToFileURL } = require('node:url')
 const assert = require('node:assert/strict')
-const data = mkdtempSync(join(tmpdir(), 'gallery-fullscreen-'))
+const tempRoot = resolve(tmpdir())
+const data = resolve(mkdtempSync(join(tempRoot, 'gallery-fullscreen-')))
+if (dirname(data) !== tempRoot || !basename(data).startsWith('gallery-fullscreen-')) throw new Error('Unsafe temporary userData path')
 app.setPath('userData', data)
 app.on('will-quit', () => { try { rmSync(data, { recursive: true, force: true }) } catch {} })
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -65,7 +67,25 @@ const timeout = setTimeout(() => { console.error('Smoke check timed out'); app.e
   await js("smokePlayback.play(); setTimeout(() => { smokePlayback.playerOpen = false }, 0)")
   await sleep(750)
   assert.equal(window.isFullScreen(), false)
-  console.log('PASS: native fullscreen, bounds restore, overlapping fade, controls, rapid navigation, Escape, rapid close')
+  await js(`(() => {
+    const svg = color => 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60"><rect width="100%" height="100%" fill="' + color + '"/></svg>')
+    const item = (id, color) => ({ id, title: id, source: 'autoplay smoke', type: 'image', mediaUrl: svg(color), previewUrl: null })
+    smokePlayback.entries = [
+      { entryId: 'album:smoke-a', type: 'album', albumId: 'smoke-a', title: 'Autoplay A', sortOrder: 'filename', items: [item('auto-a', 'red')] },
+      { entryId: 'album:smoke-b', type: 'album', albumId: 'smoke-b', title: 'Autoplay B', sortOrder: 'filename', items: [item('auto-b', 'blue')] }
+    ]
+    smokePlayback.entryIndex = 0
+    smokePlayback.currentMediaIndex = 0
+    smokePlayback.loop = true
+    smokePlayback.imageIntervalSeconds = 1
+    smokePlayback.isPlaying = true
+    smokePlayback.playerOpen = true
+  })()`)
+  await until(() => js("smokePlayback.currentEntryId === 'album:smoke-b'"), 'Automatic playback did not cross into the next package')
+  await until(() => js('smokePlayback.effectiveXp >= 1'), 'Ten seconds of valid playback did not earn XP')
+  await js('smokePlayback.playerOpen = false; smokePlayback.isPlaying = false')
+  await until(() => !window.isFullScreen(), 'Autoplay smoke did not exit fullscreen')
+  console.log('PASS: native fullscreen, bounds restore, fade, controls, rapid navigation, Escape, close, cross-package autoplay, 1 XP after valid viewing')
   clearTimeout(timeout)
   app.quit()
 })().catch(error => { console.error(error); clearTimeout(timeout); app.exit(1) })

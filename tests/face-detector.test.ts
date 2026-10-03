@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { Detection } from '@mediapipe/tasks-vision'
 import { cropFromFaces } from '../src/renderer/src/utils/face-detector'

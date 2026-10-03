@@ -5,7 +5,8 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createDatabase } from './database'
 import { validateDroppedFolderPaths } from './drop-paths'
-import type { AlbumDetail, CoserDetail, CoserSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
+import type { SmartCoserIndexItem } from './smart-folder-coser'
+import type { AlbumDetail, CoserDetail, CoserSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, PlaybackCheckpoint, PlaybackStats, PreviewProgressEvent, StorageEligibility, TrashOperationResult, TrashSnapshot } from './types'
 
 type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null; coserId?: string }
 export type ImportDestination = { type: 'library' } | { type: 'folder'; folderId: string } | { type: 'coser'; coserId: string }
@@ -163,6 +164,14 @@ export class ImportManager {
     const result = await dialog.showOpenDialog(owner, { title: '导入文件夹', properties: ['openDirectory', 'multiSelections'] })
     return result.canceled || !result.filePaths.length ? null : this.request<ImportJobSummary>('plan', result.filePaths.map((path) => ({ path, kind: 'folder', folderId } satisfies Source)))
   }
+  async chooseSmartFolderPaths(owner: BrowserWindow): Promise<string[] | null> {
+    const result = await dialog.showOpenDialog(owner, { title: '智能导入文件夹', properties: ['openDirectory', 'multiSelections'] })
+    return result.canceled || !result.filePaths.length ? null : validateDroppedFolderPaths(result.filePaths, this.storagePath)
+  }
+  validateSmartFolderPaths(rawPaths: unknown): Promise<string[]> { return validateDroppedFolderPaths(rawPaths, this.storagePath) }
+  planSmartFolders(sources: Array<{ path: string; coserId: string | null }>): Promise<ImportJobSummary> {
+    return this.request<ImportJobSummary>('plan', sources.map(({ path, coserId }) => ({ path, kind: 'folder', ...(coserId ? { coserId } : {}) } satisfies Source)))
+  }
   async importDroppedFolders(rawPaths: unknown, rawDestination: unknown): Promise<ImportJobSummary> {
     if (!rawDestination || typeof rawDestination !== 'object') throw new Error('导入位置无效，请重新拖入文件夹')
     const destination = rawDestination as Record<string, unknown>
@@ -178,6 +187,10 @@ export class ImportManager {
   getJobs(): Promise<ImportJobSummary[]> { return this.request('get-jobs') }
   getJob(jobId: string): Promise<ImportJobDetail> { return this.request('get-job', jobId) }
   getLibrary(): Promise<LibrarySnapshot> { return this.request('get-library') }
+  getPlaybackState(): Promise<PlaybackStats> { return this.request('get-playback-state') }
+  getPlaybackMedia(mediaIds: string[]): Promise<LibraryMedia[]> { return this.request('get-playback-media', mediaIds) }
+  savePlaybackState(payload: unknown): Promise<PlaybackStats> { return this.request('save-playback-state', payload) }
+  playbackCheckpoint(payload: PlaybackCheckpoint): Promise<PlaybackStats> { return this.request('playback-checkpoint', payload) }
   getFolderTree(): Promise<FolderTreeNode[]> { return this.request('get-folder-tree') }
   getAlbum(albumId: string): Promise<AlbumDetail> { return this.request('get-album', albumId) }
   getMediaPath(mediaId: string): Promise<string> { return this.request('get-media-path', mediaId) }
@@ -186,6 +199,16 @@ export class ImportManager {
   moveMedia(mediaId: string, folderId: string | null): Promise<void> { return this.request('move-media', { mediaId, folderId }) }
   moveAlbum(albumId: string, folderId: string | null): Promise<void> { return this.request('move-album', { albumId, folderId }) }
   getCosers(): Promise<CoserSummary[]> { return this.request('get-cosers') }
+  getSmartCoserIndex(): Promise<SmartCoserIndexItem[]> { return this.request('get-smart-coser-index') }
+  getSmartCoserMapping(signature: string): Promise<string | null> { return this.request('get-smart-coser-mapping', { signature }) }
+  async getSmartCoserMappings(signatures: string[]): Promise<Record<string, string>> {
+    const mappings: Record<string, string> = {}
+    for (let offset = 0; offset < signatures.length; offset += 500) Object.assign(mappings, await this.request<Record<string, string>>('get-smart-coser-mappings', signatures.slice(offset, offset + 500)))
+    return mappings
+  }
+  saveSmartCoserMapping(signature: string, coserId: string): Promise<void> { return this.request('set-smart-coser-mapping', { signature, coserId }) }
+  getSmartCoserModelCache(signature: string): Promise<string | null> { return this.request('get-smart-coser-model-cache', { signature }) }
+  saveSmartCoserModelCache(signature: string, result: string): Promise<void> { return this.request('set-smart-coser-model-cache', { signature, result }) }
   getCoser(coserId: string): Promise<CoserDetail> { return this.request('get-coser', coserId) }
   getCoserAvatarMedia(coserId: string): Promise<LibraryMedia[]> { return this.request('get-coser-avatar-media', coserId) }
   getCoserAvatarSource(coserId: string, mediaId: string): Promise<string> { return this.request('get-coser-avatar-source', { coserId, mediaId }) }

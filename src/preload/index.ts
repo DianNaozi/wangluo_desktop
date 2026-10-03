@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { PlaybackQueueEntryState, PlaybackSample, PlaybackStats } from '../main/import/types'
+import type { SmartCoserIndexItem, SmartFolderImportDecision, SmartFolderImportSession, SmartFolderCoserSettings } from '../main/import/smart-folder-coser'
 
 export type MediaKind = 'image' | 'video' | 'file'
 export type ImportJobStatus = 'planned' | 'queued' | 'running' | 'completed' | 'partial_failed' | 'interrupted'
@@ -26,13 +28,26 @@ const api = {
   version: '1.0',
   playback: {
     enterFullscreen: (): Promise<void> => ipcRenderer.invoke('playback:set-fullscreen', true),
-    exitFullscreen: (): Promise<void> => ipcRenderer.invoke('playback:set-fullscreen', false)
+    exitFullscreen: (): Promise<void> => ipcRenderer.invoke('playback:set-fullscreen', false),
+    getState: (): Promise<PlaybackStats> => ipcRenderer.invoke('playback:get-state'),
+    getMedia: (mediaIds: string[]): Promise<LibraryMedia[]> => ipcRenderer.invoke('playback:get-media', mediaIds),
+    saveState: (state: { queue: PlaybackQueueEntryState[]; cursorEntryId: string | null; cursorMediaId: string | null; imageIntervalSeconds: number; loop: boolean }): Promise<PlaybackStats> => ipcRenderer.invoke('playback:save-state', state),
+    beginSession: (sessionId: string): Promise<void> => ipcRenderer.invoke('playback:begin-session', sessionId),
+    sample: (sample: PlaybackSample): Promise<{ acceptedWallMs: number; stats: PlaybackStats | null; error?: string }> => ipcRenderer.invoke('playback:sample', sample),
+    endSession: (sessionId: string): Promise<PlaybackStats | null> => ipcRenderer.invoke('playback:end-session', sessionId)
   },
   app: { getVersion: (): Promise<string> => ipcRenderer.invoke('app:get-version') },
   media: {
     importFiles: (folderId: string | null = null): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-files', folderId),
-    importFolders: (folderId: string | null = null): Promise<ImportJobSummary | null> => ipcRenderer.invoke('media:import-folders', folderId),
-    importDroppedFolders: (files: File[], destination: ImportDestination): Promise<ImportJobSummary> => ipcRenderer.invoke('media:import-dropped-folders', { paths: files.map((file) => webUtils.getPathForFile(file)), destination }),
+    importFolders: (folderId: string | null = null): Promise<ImportJobSummary | SmartFolderImportSession | null> => ipcRenderer.invoke('media:import-folders', folderId),
+    importDroppedFolders: (files: File[], destination: ImportDestination): Promise<ImportJobSummary | SmartFolderImportSession> => ipcRenderer.invoke('media:import-dropped-folders', { paths: files.map((file) => webUtils.getPathForFile(file)), destination }),
+    resolveSmartFolderImport: (sessionId: string, decisions: SmartFolderImportDecision[]): Promise<SmartFolderImportSession> => ipcRenderer.invoke('media:resolve-smart-folder-import', { sessionId, decisions }),
+    cancelSmartFolderImport: (sessionId: string): Promise<SmartFolderImportSession | null> => ipcRenderer.invoke('media:cancel-smart-folder-import', sessionId),
+    onSmartFolderImportProgress: (listener: (session: SmartFolderImportSession) => void): (() => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, session: SmartFolderImportSession) => listener(session)
+      ipcRenderer.on('media:smart-folder-import-progress', handler)
+      return () => ipcRenderer.removeListener('media:smart-folder-import-progress', handler)
+    },
     getJobs: (): Promise<ImportJobSummary[]> => ipcRenderer.invoke('media:get-jobs'),
     getJob: (jobId: string): Promise<ImportJobDetail> => ipcRenderer.invoke('media:get-job', jobId),
     retryJob: (jobId: string): Promise<ImportJobSummary> => ipcRenderer.invoke('media:retry-job', jobId),
@@ -75,6 +90,7 @@ const api = {
     moveMedia: (mediaId: string, folderId: string | null): Promise<void> => ipcRenderer.invoke('media:move-media', mediaId, folderId),
     moveAlbum: (albumId: string, folderId: string | null): Promise<void> => ipcRenderer.invoke('media:move-album', albumId, folderId),
     getCosers: (): Promise<CoserSummary[]> => ipcRenderer.invoke('media:get-cosers'),
+    getSmartCoserIndex: (): Promise<SmartCoserIndexItem[]> => ipcRenderer.invoke('media:get-smart-coser-index'),
     getCoser: (id: string): Promise<CoserDetail> => ipcRenderer.invoke('media:get-coser', id),
     createCoser: (name: string, aliases: string[]): Promise<CoserSummary> => ipcRenderer.invoke('media:create-coser', { name, aliases }),
     updateCoser: (id: string, name: string, aliases: string[]): Promise<CoserSummary> => ipcRenderer.invoke('media:update-coser', { id, name, aliases }),
@@ -96,7 +112,10 @@ const api = {
     pickResourceDirectory: (): Promise<string | null> => ipcRenderer.invoke('settings:pick-resource-directory'),
     setResourceDirectory: (path: string): Promise<ResourceDirectory> => ipcRenderer.invoke('settings:set-resource-directory', path),
     getImportBehavior: (): Promise<ImportBehaviorSettings> => ipcRenderer.invoke('settings:get-import-behavior'),
-    setDeleteSourcesAfterImport: (enabled: boolean): Promise<ImportBehaviorSettings> => ipcRenderer.invoke('settings:set-delete-sources-after-import', enabled)
+    setDeleteSourcesAfterImport: (enabled: boolean): Promise<ImportBehaviorSettings> => ipcRenderer.invoke('settings:set-delete-sources-after-import', enabled),
+    getSmartCoserImport: (): Promise<SmartFolderCoserSettings> => ipcRenderer.invoke('settings:get-smart-coser-import'),
+    setSmartCoserImport: (settings: SmartFolderCoserSettings): Promise<SmartFolderCoserSettings> => ipcRenderer.invoke('settings:set-smart-coser-import', settings),
+    testSmartCoserImport: (baseUrl: string): Promise<Array<{ name: string; size: number }>> => ipcRenderer.invoke('settings:test-smart-coser-import', baseUrl)
   }
 } as const
 contextBridge.exposeInMainWorld('api', api)

@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { cpus } from 'node:os'
-import { basename, extname, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, join, relative, resolve } from 'node:path'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createReadStream, createWriteStream } from 'node:fs'
@@ -10,11 +9,12 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { createDatabase } from './database'
 import { createVideoCoserAssignment } from './video-coser-assignment'
 import { createCoserAssignment } from './coser-assignment'
-import type { AlbumDetail, AlbumSummary, CoserDetail, CoserSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportEntryStatus, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, MediaKind, StorageEligibility, TrashItem, TrashOperationResult, TrashSnapshot } from './types'
+import type { AlbumDetail, AlbumSummary, CoserDetail, CoserSummary, FolderDetail, FolderSummary, FolderTreeNode, ImportEntryStatus, ImportJobDetail, ImportJobSummary, ImportProgressEvent, LibraryMedia, LibrarySnapshot, MediaKind, PlaybackAchievement, PlaybackCheckpoint, PlaybackMediaProgress, PlaybackQueueEntryState, PlaybackStats, PlaybackVideoRange, StorageEligibility, TrashItem, TrashOperationResult, TrashSnapshot } from './types'
+import { mergePlaybackRanges, playbackLevel, playbackMediaComplete, playbackXpFor } from './playback-rewards'
 
 type WorkerConfig = { databasePath: string; storagePath: string; deleteSourcesAfterImport?: boolean }
 type Source = { path: string; kind: 'file' | 'folder'; folderId?: string | null; coserId?: string }
-type Request = { id?: string; command: 'assign-videos-coser' | 'undo-video-coser-assignment' | 'unassign-video-coser' | 'assign-albums-coser' | 'undo-album-coser-assignment' | 'plan' | 'get-jobs' | 'get-job' | 'get-library' | 'get-folder-tree' | 'get-album' | 'get-folder' | 'get-media-path' | 'get-coser-avatar-media' | 'get-coser-avatar-source' | 'create-folder' | 'move-media' | 'move-album' | 'get-cosers' | 'get-coser' | 'create-coser' | 'update-coser' | 'set-coser-avatar' | 'delete-coser' | 'assign-album-coser' | 'unassign-album-coser' | 'get-trash' | 'retry' | 'trash-media' | 'trash-album' | 'trash-folder' | 'restore-media' | 'restore-album' | 'restore-folder' | 'purge-trash' | 'purge-album' | 'purge-folder' | 'purge-all-trash' | 'purge-orphan' | 'set-delete-sources-after-import' | 'source-disposal-result' | 'get-storage-eligibility' | 'export-orphan'; payload?: unknown }
+type Request = { id?: string; command: 'assign-videos-coser' | 'undo-video-coser-assignment' | 'unassign-video-coser' | 'assign-albums-coser' | 'undo-album-coser-assignment' | 'plan' | 'get-jobs' | 'get-job' | 'get-library' | 'get-folder-tree' | 'get-album' | 'get-folder' | 'get-media-path' | 'get-coser-avatar-media' | 'get-coser-avatar-source' | 'create-folder' | 'move-media' | 'move-album' | 'get-cosers' | 'get-coser' | 'create-coser' | 'update-coser' | 'set-coser-avatar' | 'delete-coser' | 'assign-album-coser' | 'unassign-album-coser' | 'get-trash' | 'retry' | 'trash-media' | 'trash-album' | 'trash-folder' | 'restore-media' | 'restore-album' | 'restore-folder' | 'purge-trash' | 'purge-album' | 'purge-folder' | 'purge-all-trash' | 'purge-orphan' | 'set-delete-sources-after-import' | 'source-disposal-result' | 'get-storage-eligibility' | 'export-orphan' | 'get-playback-state' | 'get-playback-media' | 'save-playback-state' | 'playback-checkpoint' | 'get-smart-coser-index' | 'get-smart-coser-mapping' | 'get-smart-coser-mappings' | 'set-smart-coser-mapping' | 'get-smart-coser-model-cache' | 'set-smart-coser-model-cache'; payload?: unknown }
 type ScannedFile = { path: string; relativePath: string; name: string; size: number; modifiedAt: number; kind: MediaKind; albumId: string | null; folderId: string | null; sourceRootPath: string | null; skippedReason?: string }
 type SourceDisposalRequest = { entryId: string; sourcePath: string; sourceRootPath: string | null; sourceSize: number; sourceModifiedAt: number }
 type SourceDisposalResult = { entryId: string; success: boolean; error?: string }
@@ -37,12 +37,26 @@ const ARCHIVE_EXTENSIONS = new Set(['.zip', '.rar', '.7z'])
 const hashLocks = new Map<string, Promise<void>>()
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 const PROGRESS_INTERVAL_MS = 250
+const importPathCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' })
 const scheduledProgress = new Map<string, NodeJS.Timeout>()
 const lastProgressAt = new Map<string, number>()
 const pendingSourceDisposals = new Map<string, (result: SourceDisposalResult) => void>()
 let queuePumping = false
 let queueScheduled = false
 let deleteSourcesAfterImport = Boolean(config.deleteSourcesAfterImport)
+
+function compareStableNatural(left: string, right: string): number {
+  return importPathCollator.compare(left, right) || (left < right ? -1 : left > right ? 1 : 0)
+}
+
+function compareImportEntries(left: Record<string, unknown>, right: Record<string, unknown>): number {
+  const leftPath = String(left.source_path ?? '')
+  const rightPath = String(right.source_path ?? '')
+  return compareStableNatural(dirname(leftPath), dirname(rightPath)) ||
+    compareStableNatural(basename(leftPath), basename(rightPath)) ||
+    compareStableNatural(leftPath, rightPath) ||
+    compareStableNatural(String(left.id ?? ''), String(right.id ?? ''))
+}
 
 function reply(id: string, result: unknown): void { parent.postMessage({ type: 'response', id, result }) }
 function replyError(id: string, error: unknown): void { reply(id, { error: error instanceof Error ? error.message : String(error) }) }
@@ -582,7 +596,8 @@ async function processEntry(entry: Record<string, unknown>, jobId: string): Prom
 async function processPendingSourceDisposals(jobId: string): Promise<void> {
   const entries = sqlite.prepare(`SELECT * FROM import_entries
     WHERE job_id = ? AND status IN ('imported', 'duplicate') AND source_cleanup_status = 'pending'
-    ORDER BY created_at, id`).all(jobId) as Record<string, unknown>[]
+    `).all(jobId) as Record<string, unknown>[]
+  entries.sort(compareImportEntries)
   for (const entry of entries) await disposeSourceForEntry(entry, jobId)
 }
 async function runJob(jobId: string): Promise<void> {
@@ -590,12 +605,9 @@ async function runJob(jobId: string): Promise<void> {
     sqlite.prepare("UPDATE import_jobs SET status = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?").run(Date.now(), jobId)
     publish(jobId, true)
     await processPendingSourceDisposals(jobId)
-    const entries = sqlite.prepare("SELECT * FROM import_entries WHERE job_id = ? AND status = 'planned' ORDER BY created_at, id").all(jobId) as Record<string, unknown>[]
-    const concurrency = Math.max(1, Math.min(4, Math.floor(cpus().length / 2) || 1))
-    let index = 0
-    await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
-      while (index < entries.length) { const entry = entries[index++]; await processEntry(entry, jobId) }
-    }))
+    const entries = sqlite.prepare("SELECT * FROM import_entries WHERE job_id = ? AND status = 'planned'").all(jobId) as Record<string, unknown>[]
+    entries.sort(compareImportEntries)
+    for (const entry of entries) await processEntry(entry, jobId)
     const job = getJobSummary(jobId)
     sqlite.prepare("UPDATE import_jobs SET status = ?, completed_at = ? WHERE id = ?").run(job.failedEntries || job.sourceCleanupFailedEntries ? 'partial_failed' : 'completed', Date.now(), jobId)
     publish(jobId, true)
@@ -635,7 +647,8 @@ function getJobSummary(jobId: string): ImportJobSummary {
 function getJobs(): ImportJobSummary[] { return (sqlite.prepare('SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT 20').all() as Record<string, unknown>[]).map(jobSummary) }
 function getJob(jobId: string): ImportJobDetail {
   const job = getJobSummary(jobId)
-  const entries = sqlite.prepare('SELECT id, source_name, relative_path, source_size, media_kind, status, error_code, error_message, source_cleanup_status, source_cleanup_error FROM import_entries WHERE job_id = ? ORDER BY created_at, id').all(jobId) as Record<string, unknown>[]
+  const entries = sqlite.prepare('SELECT id, source_path, source_name, relative_path, source_size, media_kind, status, error_code, error_message, source_cleanup_status, source_cleanup_error FROM import_entries WHERE job_id = ?').all(jobId) as Record<string, unknown>[]
+  entries.sort(compareImportEntries)
   return { ...job, entries: entries.map((entry) => ({ id: String(entry.id), sourceName: String(entry.source_name), relativePath: String(entry.relative_path), sourceSize: Number(entry.source_size), mediaKind: String(entry.media_kind) as MediaKind, status: String(entry.status) as ImportEntryStatus, errorCode: entry.error_code === null ? null : String(entry.error_code), errorMessage: entry.error_message === null ? null : String(entry.error_message), sourceCleanupStatus: String(entry.source_cleanup_status) as 'not_requested' | 'pending' | 'trashed' | 'failed', sourceCleanupError: entry.source_cleanup_error === null ? null : String(entry.source_cleanup_error) })) }
 }
 function previewUrl(hash: string, status: string): string | null { return status === 'ready' ? `gallery-thumb://${hash}` : null }
@@ -789,6 +802,48 @@ function getCoserVideos(coserId: string): LibraryMedia[] {
     AND NOT EXISTS (SELECT 1 FROM album_items ai JOIN albums a ON a.id = ai.album_id WHERE ai.media_id = m.id AND a.trash_state = 'active')
     ORDER BY m.imported_at DESC, m.id`).all(coserId) as Record<string, unknown>[]).map(asMedia)
 }
+function getSmartCoserIndex(): Array<{ id: string; name: string; aliases: string[] }> {
+  const cosers = sqlite.prepare('SELECT id, name FROM cosers ORDER BY name COLLATE NOCASE').all() as Array<{ id: string; name: string }>
+  if (!cosers.length) return []
+  const aliases = sqlite.prepare('SELECT coser_id, alias FROM coser_aliases ORDER BY alias COLLATE NOCASE').all() as Array<{ coser_id: string; alias: string }>
+  const grouped = new Map<string, string[]>()
+  for (const row of aliases) {
+    const list = grouped.get(row.coser_id) ?? []
+    list.push(row.alias)
+    grouped.set(row.coser_id, list)
+  }
+  return cosers.map((coser) => ({ ...coser, aliases: grouped.get(coser.id) ?? [] }))
+}
+function smartCoserSignature(payload: unknown): string {
+  const signature = typeof (payload as { signature?: unknown })?.signature === 'string' ? (payload as { signature: string }).signature : ''
+  if (!/^[a-f0-9]{64}$/i.test(signature)) throw new Error('智能归类缓存标识无效')
+  return signature
+}
+function getSmartCoserMapping(payload: unknown): string | null {
+  const row = sqlite.prepare('SELECT coser_id FROM smart_coser_folder_mappings WHERE mapping_key = ?').get(smartCoserSignature(payload)) as { coser_id: string } | undefined
+  return row?.coser_id ?? null
+}
+function getSmartCoserMappings(payload: unknown): Record<string, string> {
+  const signatures = [...new Set(Array.isArray(payload) ? payload.filter((value): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value)).slice(0, 500) : [])]
+  if (!signatures.length) return {}
+  const rows = sqlite.prepare(`SELECT mapping_key, coser_id FROM smart_coser_folder_mappings WHERE mapping_key IN (${placeholders(signatures)})`).all(...signatures) as Array<{ mapping_key: string; coser_id: string }>
+  return Object.fromEntries(rows.map((row) => [row.mapping_key, row.coser_id]))
+}
+function saveSmartCoserMapping(payload: unknown): void {
+  const data = payload as { signature?: unknown; coserId?: unknown }
+  const signature = smartCoserSignature(payload)
+  if (typeof data?.coserId !== 'string' || !sqlite.prepare('SELECT 1 FROM cosers WHERE id = ?').get(data.coserId)) throw new Error('目标 Coser 不存在或已删除')
+  sqlite.prepare('INSERT INTO smart_coser_folder_mappings (mapping_key, coser_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(mapping_key) DO UPDATE SET coser_id = excluded.coser_id, updated_at = excluded.updated_at').run(signature, data.coserId, Date.now())
+}
+function getSmartCoserModelCache(payload: unknown): string | null {
+  const row = sqlite.prepare('SELECT result_json FROM smart_coser_model_cache WHERE cache_key = ?').get(smartCoserSignature(payload)) as { result_json: string } | undefined
+  return row?.result_json ?? null
+}
+function saveSmartCoserModelCache(payload: unknown): void {
+  const data = payload as { signature?: unknown; result?: unknown }
+  if (typeof data?.result !== 'string' || data.result.length > 8000) throw new Error('模型归类结果无效')
+  sqlite.prepare('INSERT INTO smart_coser_model_cache (cache_key, result_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET result_json = excluded.result_json, updated_at = excluded.updated_at').run(smartCoserSignature(payload), data.result, Date.now())
+}
 function getCosers(): CoserSummary[] {
   const startedAt = performance.now()
   const rows = sqlite.prepare('SELECT id, name, updated_at, avatar_updated_at FROM cosers ORDER BY updated_at DESC, name COLLATE NOCASE').all() as CoserRow[]
@@ -927,6 +982,141 @@ function getAlbum(albumId: string): AlbumDetail {
   const media = sqlite.prepare("SELECT m.id, m.original_name, m.media_kind, m.imported_at, m.content_hash, m.preview_status, m.preview_error FROM album_items ai JOIN media_items m ON m.id = ai.media_id WHERE ai.album_id = ? AND m.trash_state = 'active' ORDER BY ai.sort_order").all(albumId) as Record<string, unknown>[]
   return { id: album.id, title: album.title, folderId: album.folder_id, updatedAt: Number(album.updated_at), media: media.map(asMedia) }
 }
+
+function playbackDateKey(timestamp: number): string {
+  const date = new Date(timestamp)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function safeJson<T>(value: unknown, fallback: T): T {
+  try { return JSON.parse(String(value)) as T } catch { return fallback }
+}
+
+function getPlaybackState(): PlaybackStats {
+  const state = sqlite.prepare('SELECT * FROM playback_state WHERE id = 1').get() as Record<string, unknown>
+  const queue = safeJson<PlaybackQueueEntryState[]>(state.queue_json, [])
+  const progressRows = sqlite.prepare('SELECT * FROM playback_media_progress ORDER BY last_watched_at DESC').all() as Record<string, unknown>[]
+  const progress: PlaybackMediaProgress[] = progressRows.map((row) => ({
+    entryId: String(row.entry_id), mediaId: String(row.media_id), watchedMs: Number(row.watched_ms),
+    imageElapsedMs: Number(row.image_elapsed_ms), videoPositionMs: Number(row.video_position_ms), videoDurationMs: Number(row.video_duration_ms),
+    videoRanges: safeJson(row.video_ranges_json, []), lastWatchedAt: row.last_watched_at === null ? null : Number(row.last_watched_at)
+  }))
+  const achievements = sqlite.prepare('SELECT id, earned_at FROM playback_achievements ORDER BY earned_at').all() as Array<{ id: string; earned_at: number }>
+  const days: PlaybackStats['days'] = []
+  const now = new Date()
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset)
+    const date = playbackDateKey(day.getTime())
+    const row = sqlite.prepare('SELECT watched_ms FROM playback_days WHERE date = ?').get(date) as { watched_ms: number } | undefined
+    days.push({ date, watchedMs: Number(row?.watched_ms ?? 0) })
+  }
+  const totalWatchedMs = Number(state.total_watched_ms)
+  const xp = playbackXpFor(totalWatchedMs)
+  return {
+    totalWatchedMs, xp, ...playbackLevel(xp), imageIntervalSeconds: Number(state.image_interval_seconds), loop: Number(state.loop_enabled) === 1,
+    queue, cursorEntryId: typeof state.cursor_entry_id === 'string' ? state.cursor_entry_id : null,
+    cursorMediaId: typeof state.cursor_media_id === 'string' ? state.cursor_media_id : null,
+    progress, achievements: achievements.map((row): PlaybackAchievement => ({ id: row.id, earnedAt: Number(row.earned_at) })),
+    lastPlayedEntryId: typeof state.last_entry_id === 'string' ? state.last_entry_id : null,
+    lastPlayedMediaId: typeof state.last_media_id === 'string' ? state.last_media_id : null, days
+  }
+}
+
+function getPlaybackMedia(payload: unknown): LibraryMedia[] {
+  if (!Array.isArray(payload)) return []
+  const ids = [...new Set(payload.filter((id): id is string => typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))].slice(0, 10_000)
+  if (!ids.length) return []
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = sqlite.prepare(`SELECT id, original_name, media_kind, imported_at, content_hash, preview_status, preview_error FROM media_items WHERE id IN (${placeholders}) AND trash_state = 'active' AND media_kind IN ('image', 'video')`).all(...ids) as Record<string, unknown>[]
+  return rows.map(asMedia)
+}
+
+function savePlaybackState(payload: unknown): PlaybackStats {
+  const value = payload as { queue?: unknown; cursorEntryId?: unknown; cursorMediaId?: unknown; imageIntervalSeconds?: unknown; loop?: unknown }
+  if (!value || !Array.isArray(value.queue) || value.queue.length > 1000) throw new Error('播放队列数据无效')
+  const seenEntries = new Set<string>()
+  const queue: PlaybackQueueEntryState[] = value.queue.map((entry: unknown) => {
+    const item = entry as Record<string, unknown>
+    const entryId = typeof item?.entryId === 'string' ? item.entryId.slice(0, 200) : ''
+    if (!entryId || seenEntries.has(entryId)) throw new Error('队列包含无效或重复的条目')
+    seenEntries.add(entryId)
+    if (item.type === 'album' && typeof item.albumId === 'string') {
+      const sortOrder = item.sortOrder === 'importedAt' ? 'importedAt' : 'filename'
+      const mediaIds = Array.isArray(item.mediaIds) ? [...new Set(item.mediaIds.filter((id): id is string => typeof id === 'string'))].slice(0, 100_000) : []
+      return { entryId, type: 'album', albumId: item.albumId.slice(0, 200), title: String(item.title ?? '图包').slice(0, 500), sortOrder, mediaIds }
+    }
+    if (item.type === 'media' && typeof item.mediaId === 'string') return { entryId, type: 'media', mediaId: item.mediaId.slice(0, 200), title: String(item.title ?? '媒体').slice(0, 500), source: String(item.source ?? '媒体').slice(0, 500) }
+    throw new Error('播放队列包含未知的条目类型')
+  })
+  const interval = Math.min(120, Math.max(1, Math.floor(Number(value.imageIntervalSeconds) || 5)))
+  const cursorEntryId = typeof value.cursorEntryId === 'string' && seenEntries.has(value.cursorEntryId) ? value.cursorEntryId : null
+  const cursorMediaId = typeof value.cursorMediaId === 'string' ? value.cursorMediaId.slice(0, 200) : null
+  sqlite.prepare('UPDATE playback_state SET queue_json = ?, cursor_entry_id = ?, cursor_media_id = ?, image_interval_seconds = ?, loop_enabled = ?, updated_at = ? WHERE id = 1')
+    .run(JSON.stringify(queue), cursorEntryId, cursorMediaId, interval, value.loop === false ? 0 : 1, Date.now())
+  return getPlaybackState()
+}
+
+function awardPlaybackAchievement(id: string, earnedAt: number): void {
+  sqlite.prepare('INSERT OR IGNORE INTO playback_achievements (id, earned_at) VALUES (?, ?)').run(id, earnedAt)
+}
+
+function awardAlbumCompletion(albumId: string, now: number): void {
+  const rows = sqlite.prepare("SELECT m.id, m.media_kind FROM album_items ai JOIN media_items m ON m.id = ai.media_id WHERE ai.album_id = ? AND m.trash_state = 'active' AND m.media_kind IN ('image', 'video')").all(albumId) as Array<{ id: string; media_kind: 'image' | 'video' }>
+  if (!rows.length) return
+  const progressById = new Map((sqlite.prepare('SELECT media_id, watched_ms, video_duration_ms, video_ranges_json FROM playback_media_progress WHERE entry_id = ?').all(`album:${albumId}`) as Array<Record<string, unknown>>).map((row) => [String(row.media_id), row]))
+  const complete = rows.every((media) => {
+    const item = progressById.get(media.id)
+    if (!item) return false
+    return playbackMediaComplete(media.media_kind, Number(item.watched_ms), safeJson(item.video_ranges_json, []), Number(item.video_duration_ms))
+  })
+  if (!complete) return
+  const first = sqlite.prepare('INSERT OR IGNORE INTO playback_completed_albums (album_id, completed_at) VALUES (?, ?)').run(albumId, now)
+  if (first.changes) awardPlaybackAchievement('first-album', now)
+  const completed = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM playback_completed_albums').get() as { count: number }).count)
+  if (completed >= 10) awardPlaybackAchievement('ten-albums', now)
+}
+
+function applyPlaybackCheckpoint(payload: unknown): PlaybackStats {
+  const checkpoint = payload as PlaybackCheckpoint
+  if (!checkpoint || typeof checkpoint.sessionId !== 'string' || checkpoint.sessionId.length > 200 || !Number.isSafeInteger(checkpoint.sequence) || checkpoint.sequence < 1) throw new Error('观看记录会话无效')
+  if (!Number.isFinite(checkpoint.watchedDeltaMs) || checkpoint.watchedDeltaMs < 0 || checkpoint.watchedDeltaMs > 10_000 || !Array.isArray(checkpoint.media) || checkpoint.media.length > 100) throw new Error('观看记录时间无效')
+  const existing = sqlite.prepare('SELECT sequence FROM playback_sessions WHERE id = ?').get(checkpoint.sessionId) as { sequence: number } | undefined
+  if (existing && existing.sequence >= checkpoint.sequence) return getPlaybackState()
+  const now = Date.now()
+  const transaction = sqlite.transaction(() => {
+    let appliedMs = 0
+    const updateMedia = sqlite.prepare(`INSERT INTO playback_media_progress (entry_id, media_id, watched_ms, image_elapsed_ms, video_position_ms, video_duration_ms, video_ranges_json, last_watched_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(entry_id, media_id) DO UPDATE SET
+        watched_ms = watched_ms + excluded.watched_ms, image_elapsed_ms = excluded.image_elapsed_ms,
+        video_position_ms = excluded.video_position_ms, video_duration_ms = MAX(video_duration_ms, excluded.video_duration_ms),
+        video_ranges_json = excluded.video_ranges_json, last_watched_at = excluded.last_watched_at`)
+    for (const item of checkpoint.media) {
+      if (!item || typeof item.entryId !== 'string' || typeof item.mediaId !== 'string') continue
+      const delta = Math.min(10_000, Math.max(0, Math.floor(Number(item.watchedDeltaMs) || 0)))
+      const watchedAt = Number.isFinite(item.watchedAt) ? Math.min(now, Math.max(0, Math.floor(item.watchedAt))) : now
+      const entryId = item.entryId.slice(0, 200)
+      const mediaId = item.mediaId.slice(0, 200)
+      const previous = sqlite.prepare('SELECT video_ranges_json FROM playback_media_progress WHERE entry_id = ? AND media_id = ?').get(entryId, mediaId) as { video_ranges_json: string } | undefined
+      const oldRanges = safeJson<PlaybackVideoRange[]>(previous?.video_ranges_json, [])
+      const videoRanges = Array.isArray(item.videoRanges) ? item.videoRanges : []
+      const ranges = videoRanges.reduce((all, range) => mergePlaybackRanges(all, range), oldRanges)
+      updateMedia.run(entryId, mediaId, delta, Math.max(0, Math.floor(Number(item.imageElapsedMs) || 0)), Math.max(0, Math.floor(Number(item.positionMs) || 0)), Math.max(0, Math.floor(Number(item.durationMs) || 0)), JSON.stringify(ranges), watchedAt)
+      appliedMs += delta
+    }
+    if (appliedMs > 0) {
+      sqlite.prepare('UPDATE playback_state SET total_watched_ms = total_watched_ms + ?, xp_remainder_ms = (xp_remainder_ms + ?) % 10000, updated_at = ?, cursor_entry_id = ?, cursor_media_id = ?, last_entry_id = ?, last_media_id = ? WHERE id = 1')
+        .run(appliedMs, appliedMs, now, checkpoint.media.at(-1)?.entryId ?? null, checkpoint.media.at(-1)?.mediaId ?? null, checkpoint.media.at(-1)?.entryId ?? null, checkpoint.media.at(-1)?.mediaId ?? null)
+      sqlite.prepare('INSERT INTO playback_days (date, watched_ms) VALUES (?, ?) ON CONFLICT(date) DO UPDATE SET watched_ms = watched_ms + excluded.watched_ms')
+        .run(playbackDateKey(now), appliedMs)
+      if (Number((sqlite.prepare('SELECT total_watched_ms AS value FROM playback_state WHERE id = 1').get() as { value: number }).value) >= 3_600_000) awardPlaybackAchievement('one-hour', now)
+      for (const item of checkpoint.media) if (item.entryId.startsWith('album:') && item.watchedDeltaMs > 0) awardAlbumCompletion(item.entryId.slice('album:'.length), now)
+    }
+    sqlite.prepare('INSERT INTO playback_sessions (id, sequence, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET sequence = excluded.sequence, updated_at = excluded.updated_at')
+      .run(checkpoint.sessionId, checkpoint.sequence, now)
+  })
+  transaction()
+  return getPlaybackState()
+}
 function getMediaPath(mediaId: string): string {
   const media = sqlite.prepare("SELECT object_path FROM media_items WHERE id = ? AND trash_state = 'active'").get(mediaId) as { object_path: string } | undefined
   if (!media) throw new Error('媒体不存在或不可查看')
@@ -1023,7 +1213,8 @@ const startup = startupRecovery.then(async () => {
 void startup.catch(() => undefined)
 const readDuringOrphanScan = new Set<Request['command']>([
   'get-jobs', 'get-job', 'get-library', 'get-folder-tree', 'get-album', 'get-folder',
-  'get-media-path', 'get-coser-avatar-media', 'get-coser-avatar-source', 'get-cosers', 'get-coser'
+  'get-media-path', 'get-coser-avatar-media', 'get-coser-avatar-source', 'get-cosers', 'get-coser', 'get-playback-state', 'get-playback-media',
+  'get-smart-coser-index', 'get-smart-coser-mapping', 'get-smart-coser-mappings', 'get-smart-coser-model-cache'
 ])
 
 parent.on('message', (request: Request) => {
@@ -1041,6 +1232,10 @@ parent.on('message', (request: Request) => {
       else if (request.command === 'get-jobs') reply(request.id, getJobs())
       else if (request.command === 'get-job') reply(request.id, getJob(String(request.payload)))
       else if (request.command === 'get-library') reply(request.id, getLibrary())
+      else if (request.command === 'get-playback-state') reply(request.id, getPlaybackState())
+      else if (request.command === 'get-playback-media') reply(request.id, getPlaybackMedia(request.payload))
+      else if (request.command === 'save-playback-state') reply(request.id, savePlaybackState(request.payload))
+      else if (request.command === 'playback-checkpoint') reply(request.id, applyPlaybackCheckpoint(request.payload))
       else if (request.command === 'get-folder-tree') reply(request.id, getFolderTree())
       else if (request.command === 'get-album') reply(request.id, getAlbum(String(request.payload)))
       else if (request.command === 'get-media-path') reply(request.id, getMediaPath(String(request.payload)))
@@ -1051,6 +1246,12 @@ parent.on('message', (request: Request) => {
       else if (request.command === 'move-media') { moveMedia(request.payload); reply(request.id, true) }
       else if (request.command === 'move-album') { moveAlbum(request.payload); reply(request.id, true) }
       else if (request.command === 'get-cosers') reply(request.id, getCosers())
+      else if (request.command === 'get-smart-coser-index') reply(request.id, getSmartCoserIndex())
+      else if (request.command === 'get-smart-coser-mapping') reply(request.id, getSmartCoserMapping(request.payload))
+      else if (request.command === 'get-smart-coser-mappings') reply(request.id, getSmartCoserMappings(request.payload))
+      else if (request.command === 'set-smart-coser-mapping') { saveSmartCoserMapping(request.payload); reply(request.id, null) }
+      else if (request.command === 'get-smart-coser-model-cache') reply(request.id, getSmartCoserModelCache(request.payload))
+      else if (request.command === 'set-smart-coser-model-cache') { saveSmartCoserModelCache(request.payload); reply(request.id, null) }
       else if (request.command === 'get-coser') reply(request.id, getCoser(String(request.payload)))
       else if (request.command === 'create-coser') reply(request.id, createCoser(request.payload))
       else if (request.command === 'update-coser') reply(request.id, updateCoser(request.payload))

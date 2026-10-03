@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { Archive, BarChart3, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, FolderInput, HardDrive, Image, Layers3, LoaderCircle, Moon, Search, Settings, Sun, Tag, UserRound, Clock3 } from 'lucide-vue-next'
+import { CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, FolderInput, Image, Layers3, LoaderCircle, Moon, Search, Settings, Sun, UserRound } from 'lucide-vue-next'
 import Input from '@/components/ui/Input.vue'
 import Badge from '@/components/ui/Badge.vue'
 import { useAppStore } from '@/stores/app'
 import { useLibraryStore } from '@/stores/library'
 import { useImportStore } from '@/stores/imports'
 import { useCoserAssignmentStore } from '@/stores/coser-assignment'
+import { usePlaybackStore } from '@/stores/playback'
 import PlaybackController from '@/components/playback/PlaybackController.vue'
 import FolderTree from '@/components/folders/FolderTree.vue'
+import SmartFolderImportDialog from '@/components/imports/SmartFolderImportDialog.vue'
 import { importProgress } from '@/utils/import-feedback'
 import { reportStartupStage } from '@/utils/startup-performance'
 
@@ -17,6 +19,7 @@ const app = useAppStore()
 const library = useLibraryStore()
 const imports = useImportStore()
 const assignment = useCoserAssignmentStore()
+const playback = usePlaybackStore()
 const route = useRoute()
 const appVersion = ref('—')
 const resizing = ref(false)
@@ -73,6 +76,7 @@ function handleCanceledExternalDrag(event: KeyboardEvent): void { if (event.key 
 
 onMounted(() => {
   reportStartupStage('renderer mounted')
+  void playback.hydrate()
   void imports.refresh()
   void window.api.app.getVersion().then((version) => { appVersion.value = version })
   window.addEventListener('dragenter', handleExternalDragEnter, true)
@@ -91,17 +95,13 @@ onBeforeUnmount(() => {
 })
 
 const navigation = [
-  { to: '/', label: '首页', icon: Archive },
   { to: '/library', label: '媒体库', icon: Image },
   { to: '/cosers', label: 'Coser', icon: UserRound },
-  { to: '/tags', label: '标签', icon: Tag },
-  { to: '/timeline', label: '时间轴', icon: Clock3 },
-  { to: '/statistics', label: '统计数据', icon: BarChart3 },
-  { to: '/storage', label: '存储空间', icon: HardDrive },
+  { to: '/statistics', label: '观看成长', icon: Layers3 },
   
 ]
 const title = computed(() => String(route.meta.title ?? '幻视图库'))
-const showGlobalSearch = computed(() => route.name === 'home' || route.name === 'library')
+const showGlobalSearch = computed(() => route.name === 'library')
 const showFolderTree = computed(() => route.name === 'library' || route.name === 'folder-detail')
 
 function startResize(event: PointerEvent): void {
@@ -129,7 +129,7 @@ function startResize(event: PointerEvent): void {
       <span class="hidden h-7 w-px bg-line sm:block"></span>
       <div class="flex min-w-0 flex-1 items-center gap-4">
         <h1 class="min-w-16 text-base font-semibold text-foreground">{{ title }}</h1>
-        <div v-if="showGlobalSearch" class="relative mx-auto w-full max-w-2xl flex-1"><Search class="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" :size="18" /><Input v-model="library.searchQuery" class="h-10 rounded-xl border-line bg-canvas pl-10 shadow-none focus-visible:ring-violet-500/20" placeholder="搜索图集、Coser、标签或文件名" /></div>
+        <div v-if="showGlobalSearch" class="relative mx-auto w-full max-w-2xl flex-1"><Search class="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" :size="18" /><Input v-model="library.searchQuery" class="h-10 rounded-xl border-line bg-canvas pl-10 shadow-none focus-visible:ring-violet-500/20" placeholder="搜索图集或文件名" /></div>
         <div v-else class="flex-1"></div>
         <div class="flex shrink-0 items-center gap-2"><PlaybackController /><button class="grid size-9 place-items-center rounded-xl text-muted transition hover:bg-surface-hover hover:text-foreground" :title="app.theme === 'dark' ? '切换到亮色主题' : '切换到深色主题'" @click="app.toggleTheme"><Sun v-if="app.theme === 'dark'" :size="17" /><Moon v-else :size="17" /></button><Badge class="hidden sm:inline-flex">本地模式</Badge></div>
       </div>
@@ -144,11 +144,11 @@ function startResize(event: PointerEvent): void {
         <div class="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize" @pointerdown="startResize"><span class="absolute inset-y-0 left-1/2 w-px bg-transparent hover:bg-violet-400" /></div>
       </aside>
 
-      <main class="flex min-w-0 flex-1 flex-col"><section :class="['min-h-0 flex-1', showFolderTree ? 'overflow-hidden' : 'overflow-auto']"><div v-if="showFolderTree" class="flex h-full min-w-0"><FolderTree /><div class="min-w-0 flex-1 overflow-auto"><RouterView /></div></div><RouterView v-else /></section><footer class="flex h-9 shrink-0 items-center justify-between border-t border-line px-5 text-xs text-muted"><span>原文件从不移动或删除</span><span>桌面端 v{{ appVersion }}</span></footer></main>
+      <main class="flex min-w-0 flex-1 flex-col"><section :class="['min-h-0 flex-1', showFolderTree ? 'overflow-hidden' : 'overflow-auto']"><div v-if="showFolderTree" class="flex h-full min-w-0"><FolderTree /><div class="min-w-0 flex-1 overflow-auto"><RouterView /></div></div><RouterView v-else /></section><footer class="flex h-9 shrink-0 items-center justify-between border-t border-line px-5 text-xs text-muted"><span>原始文件处理方式可在设置中调整</span><span>桌面端 v{{ appVersion }}</span></footer></main>
     </div>
     <div class="absolute bottom-12 right-5 z-50 flex w-[min(360px,calc(100vw-2.5rem))] flex-col-reverse gap-3" aria-live="polite">
       <section v-if="imports.droppedFolderScans" class="rounded-xl border border-violet-500/30 bg-surface-raised p-3.5 text-sm text-foreground shadow-xl">
-        <div class="flex items-center gap-2"><LoaderCircle class="animate-spin text-violet-500" :size="17" /><p>正在扫描拖入的文件夹，扫描完成后会自动加入导入队列…</p></div>
+        <div class="flex items-center gap-2"><LoaderCircle class="animate-spin text-violet-500" :size="17" /><p>正在扫描拖入的文件夹并判断 Coser…</p></div>
       </section>
       <section v-if="imports.droppedFolderError" class="rounded-xl border border-rose-500/30 bg-surface-raised p-3.5 text-sm text-rose-600 shadow-xl" role="alert">
         <p>{{ imports.droppedFolderError }}</p>
@@ -172,8 +172,9 @@ function startResize(event: PointerEvent): void {
       <div class="w-full max-w-lg rounded-2xl border-2 border-dashed border-violet-500 bg-surface/95 px-8 py-10 text-center shadow-2xl">
         <FolderInput class="mx-auto text-violet-500" :size="36" />
         <p class="mt-4 text-lg font-semibold text-foreground">松开导入至{{ dropDestinationLabel }}</p>
-        <p class="mt-2 text-sm text-muted">每个文件夹会创建一个图集，子文件夹中的媒体会合并导入</p>
+        <p class="mt-2 text-sm text-muted">每个文件夹会创建一个图集，子文件夹中的媒体会合并导入；符合条件时会自动归入 Coser</p>
       </div>
     </div>
   </div>
+    <SmartFolderImportDialog :sessions="imports.smartFolderSessions" :cosers="imports.smartCoserChoices" :errors="imports.smartFolderErrors" @resolve="imports.resolveSmartFolderImport" @cancel="imports.cancelSmartFolderImport" />
 </template>

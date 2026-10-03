@@ -143,3 +143,6 @@ export type ResourceDirectory = {
 export type ImportBehaviorSettings = {
     deleteSourcesAfterImport: boolean;
 };
+export type { SmartCoserIndexItem, SmartFolderCoserCandidate, SmartFolderCoserSettings, SmartFolderImportDecision, SmartFolderImportItem, SmartFolderImportSession, SmartFolderImportStatus } from '../main/import/smart-folder-coser';
+import type { PlaybackQueueEntryState, PlaybackSample, PlaybackStats } from '../main/import/types';
+export type { PlaybackAchievement, PlaybackCheckpoint, PlaybackCheckpointMedia, PlaybackDayTotal, PlaybackMediaProgress, PlaybackQueueEntryState, PlaybackSample, PlaybackStats, PlaybackVideoRange } from '../main/import/types';

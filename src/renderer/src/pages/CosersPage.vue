@@ -200,7 +200,7 @@ async function unassignAlbum(albumId: string): Promise<void> {
   catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
 }
 async function addAlbumToQueue(id: string, title: string): Promise<void> {
-  try { const album = await window.api.library.getAlbum(id); playback.addMediaBatch(sortMedia(album.media, library.albumSortOrder), title) }
+  try { const album = await window.api.library.getAlbum(id); playback.addAlbums([{ albumId: album.id, title, media: sortMedia(album.media, library.albumSortOrder), sortOrder: library.albumSortOrder }]) }
   catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
 }
 async function trashAlbum(id: string): Promise<void> {

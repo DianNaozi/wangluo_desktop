@@ -85,7 +85,7 @@ watch(() => imports.completedImportRevision, () => { void load().then(() => next
 watch(() => imports.previewRevision, () => { void load().then(() => nextTick(updateGalleryWidth)) })
 function trashMedia(id: string, name: string): void { trashTarget.value = { id, name, isAlbum: false } }
 function openViewer(id: string): void { viewerMediaId.value = id }
-function addAlbumToQueue(): void { if (album.value) playback.addMediaBatch(sortedMedia.value, album.value.title) }
+function addAlbumToQueue(): void { if (album.value) playback.addAlbums([{ albumId: album.value.id, title: album.value.title, media: sortedMedia.value, sortOrder: library.albumSortOrder }]) }
 function trashAlbum(): void { if (album.value) trashTarget.value = { id: album.value.id, name: album.value.title, isAlbum: true } }
 function goUp(): void { void router.push(albumParentRoute(album.value?.folderId ?? null, route.query.fromCoser)) }
 async function confirmTrash(): Promise<void> { const target = trashTarget.value; if (!target) return; trashTarget.value = null; if (target.isAlbum) { const parentRoute = albumParentRoute(album.value?.folderId ?? null, route.query.fromCoser); await window.api.media.trashAlbum(target.id); await router.push(parentRoute) } else { await window.api.media.trashMedia(target.id); await load() } }

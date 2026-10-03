@@ -57,3 +57,69 @@ export type LibrarySnapshot = {
 
 export type ImportProgressEvent = { job: ImportJobSummary }
 export type PreviewProgressEvent = { mediaId: string; status: PreviewStatus }
+
+export type PlaybackVideoRange = { startMs: number; endMs: number }
+export type PlaybackQueueEntryState =
+  | { entryId: string; type: 'album'; albumId: string; title: string; sortOrder: 'filename' | 'importedAt'; mediaIds: string[] }
+  | { entryId: string; type: 'media'; mediaId: string; title: string; source: string }
+export type PlaybackMediaProgress = {
+  entryId: string
+  mediaId: string
+  watchedMs: number
+  imageElapsedMs: number
+  videoPositionMs: number
+  videoDurationMs: number
+  videoRanges: PlaybackVideoRange[]
+  lastWatchedAt: number | null
+}
+export type PlaybackAchievement = { id: string; earnedAt: number }
+export type PlaybackDayTotal = { date: string; watchedMs: number }
+export type PlaybackStats = {
+  totalWatchedMs: number
+  xp: number
+  level: number
+  xpInLevel: number
+  xpToNextLevel: number
+  imageIntervalSeconds: number
+  loop: boolean
+  queue: PlaybackQueueEntryState[]
+  cursorEntryId: string | null
+  cursorMediaId: string | null
+  progress: PlaybackMediaProgress[]
+  achievements: PlaybackAchievement[]
+  lastPlayedEntryId: string | null
+  lastPlayedMediaId: string | null
+  days: PlaybackDayTotal[]
+}
+export type PlaybackSample = {
+  sessionId: string
+  sequence: number
+  entryId: string
+  mediaId: string
+  mediaType: 'image' | 'video'
+  ready: boolean
+  playing: boolean
+  waiting: boolean
+  seeking: boolean
+  error: boolean
+  positionMs: number
+  durationMs: number
+  imageElapsedMs: number
+  playbackRate: number
+}
+export type PlaybackCheckpointMedia = {
+  entryId: string
+  mediaId: string
+  watchedDeltaMs: number
+  imageElapsedMs: number
+  positionMs: number
+  durationMs: number
+  videoRanges: PlaybackVideoRange[]
+  watchedAt: number
+}
+export type PlaybackCheckpoint = {
+  sessionId: string
+  sequence: number
+  watchedDeltaMs: number
+  media: PlaybackCheckpointMedia[]
+}

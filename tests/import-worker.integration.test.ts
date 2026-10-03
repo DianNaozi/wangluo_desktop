@@ -3,14 +3,16 @@ import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { promisify } from 'node:util'
 import ffmpegPath from 'ffmpeg-static'
 import sharp from 'sharp'
 import { createDatabase } from '../src/main/import/database'
+import type { PlaybackCheckpoint, PlaybackQueueEntryState, PlaybackStats } from '../src/main/import/types'
 
 type Job = { id: string; status: string; totalEntries: number; importedEntries: number; sourceCleanupFailedEntries: number }
+type JobDetail = Job & { entries: Array<{ relativePath: string; status: string }> }
 type Library = { totals: { all: number }; albums: Array<{ id: string; coverPreviewUrl: string | null; coverPreviewPending?: boolean }>; looseMedia: Array<{ id: string; previewStatus: string; previewError: string | null; previewUrl: string | null }> }
 type FolderTree = Array<{ id: string; title: string; parentId: string | null; itemCount: number; children: FolderTree }>
 type Trash = { items: Array<{ id: string; entityType: string }> }
@@ -23,6 +25,7 @@ class ImportWorkerClient {
   readonly worker: Worker
   progressEvents = 0
   failNextSourceDisposal = false
+  sourceDisposalHandler?: (request: { entryId: string; sourcePath: string }) => Promise<void>
 
   constructor(databasePath: string, storagePath: string, deleteSourcesAfterImport = false) {
     this.worker = new Worker(resolve('out/main/import-worker.js'), { workerData: { databasePath, storagePath, deleteSourcesAfterImport } })
@@ -34,7 +37,9 @@ class ImportWorkerClient {
           this.worker.postMessage({ command: 'source-disposal-result', payload: { entryId: message.request.entryId, success: false, error: 'simulated recycle-bin failure' } })
           return
         }
-        void rm(message.request.sourcePath, { force: true }).then(
+        void Promise.resolve().then(() => this.sourceDisposalHandler
+          ? this.sourceDisposalHandler(message.request!)
+          : rm(message.request!.sourcePath, { force: true })).then(
           () => this.worker.postMessage({ command: 'source-disposal-result', payload: { entryId: message.request!.entryId, success: true } }),
           (error) => this.worker.postMessage({ command: 'source-disposal-result', payload: { entryId: message.request!.entryId, success: false, error: String(error) } })
         )
@@ -143,6 +148,51 @@ describe('import worker integration', () => {
     expect(jobs.find((job) => job.id === secondJob.id)?.importedEntries).toBe(1)
   })
 
+  it('imports folder entries one at a time in natural directory and filename order', async () => {
+    const databasePath = join(root, 'gallery.sqlite')
+    await client.dispose()
+    client = new ImportWorkerClient(databasePath, root, true)
+
+    const sourceRoot = join(root, 'ordered-input')
+    const expected = ['set2/file1.bin', 'set2/file2.bin', 'set2/file10.bin', 'set10/file1.bin', 'set10/file2.bin']
+    for (const relativePath of [expected[4]!, expected[2]!, expected[0]!, expected[3]!, expected[1]!]) {
+      const source = join(sourceRoot, ...relativePath.split('/'))
+      await mkdir(dirname(source), { recursive: true })
+      await writeFile(source, relativePath)
+    }
+
+    const disposalPaths: string[] = []
+    const releases: Array<() => void> = []
+    let activeDisposals = 0
+    let maxActiveDisposals = 0
+    client.sourceDisposalHandler = async ({ sourcePath }) => {
+      activeDisposals += 1
+      maxActiveDisposals = Math.max(maxActiveDisposals, activeDisposals)
+      disposalPaths.push(relative(sourceRoot, sourcePath).replaceAll('\\', '/'))
+      await new Promise<void>((resolveDisposal) => releases.push(() => { activeDisposals -= 1; resolveDisposal() }))
+      await rm(sourcePath, { force: true })
+    }
+
+    const job = await client.request<Job>('plan', [{ path: sourceRoot, kind: 'folder' }])
+    await waitFor(async () => disposalPaths.length, (count) => count === 1)
+    expect(disposalPaths).toEqual([expected[0]])
+    expect((await client.request<JobDetail>('get-job', job.id)).entries.map((entry) => entry.relativePath.replaceAll('\\', '/'))).toEqual(expected)
+    expect((await client.request<JobDetail>('get-job', job.id)).entries.filter((entry) => entry.status === 'planned')).toHaveLength(expected.length - 1)
+
+    while (disposalPaths.length < expected.length) {
+      releases.shift()!()
+      const nextCount = disposalPaths.length + 1
+      await waitFor(async () => disposalPaths.length, (count) => count === nextCount)
+      expect(disposalPaths).toEqual(expected.slice(0, nextCount))
+      expect((await client.request<JobDetail>('get-job', job.id)).entries.filter((entry) => entry.status === 'planned')).toHaveLength(expected.length - nextCount)
+      expect(maxActiveDisposals).toBe(1)
+    }
+    releases.shift()!()
+
+    const jobs = await waitFor(() => client.request<Job[]>('get-jobs'), (items) => items.some((item) => item.id === job.id && item.status === 'completed'))
+    expect(jobs.find((item) => item.id === job.id)?.importedEntries).toBe(expected.length)
+  })
+
   it('automatically resumes a persisted in-progress entry', async () => {
     const source = join(root, 'resume.txt')
     await writeFile(source, 'resume me')
@@ -158,6 +208,49 @@ describe('import worker integration', () => {
       const jobs = await waitFor(() => resumed.request<Job[]>('get-jobs'), (items) => items.some((item) => item.id === jobId && item.status === 'completed'))
       expect(jobs.find((job) => job.id === jobId)?.importedEntries).toBe(1)
     } finally { await resumed.dispose() }
+  })
+
+  it('persists playback queues, merges actually watched video ranges, awards XP, and ignores duplicate checkpoints', async () => {
+    const databasePath = join(root, 'gallery.sqlite')
+    const { sqlite } = createDatabase(databasePath)
+    const albumId = randomUUID(); const firstImageId = randomUUID(); const secondImageId = randomUUID(); const videoId = randomUUID(); const now = Date.now()
+    const addImage = sqlite.prepare("INSERT INTO media_items (id, content_hash, media_kind, original_name, extension, byte_size, object_path, imported_at) VALUES (?, ?, 'image', ?, '.jpg', 10, ?, ?)")
+    addImage.run(firstImageId, 'a'.repeat(64), 'first.jpg', join(root, 'first.jpg'), now)
+    addImage.run(secondImageId, 'b'.repeat(64), 'second.jpg', join(root, 'second.jpg'), now)
+    sqlite.prepare("INSERT INTO media_items (id, content_hash, media_kind, original_name, extension, byte_size, object_path, imported_at) VALUES (?, ?, 'video', 'short.mp4', '.mp4', 10, ?, ?)").run(videoId, 'c'.repeat(64), join(root, 'short.mp4'), now)
+    sqlite.prepare('INSERT INTO albums (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)').run(albumId, '观看测试图包', now, now)
+    const albumItem = sqlite.prepare('INSERT INTO album_items (album_id, media_id, sort_order) VALUES (?, ?, ?)')
+    albumItem.run(albumId, firstImageId, 0); albumItem.run(albumId, secondImageId, 1); albumItem.run(albumId, videoId, 2)
+    sqlite.close()
+
+    const queue: PlaybackQueueEntryState[] = [{ entryId: `album:${albumId}`, type: 'album', albumId, title: '观看测试图包', sortOrder: 'filename', mediaIds: [firstImageId, secondImageId, videoId] }]
+    const saved = await client.request<PlaybackStats>('save-playback-state', { queue, cursorEntryId: `album:${albumId}`, cursorMediaId: firstImageId, imageIntervalSeconds: 5, loop: true })
+    expect(saved.queue).toEqual(queue)
+    expect((await client.request<Array<{ id: string }>>('get-playback-media', [firstImageId, videoId])).map((item) => item.id).sort()).toEqual([firstImageId, videoId].sort())
+
+    const checkpoint = (sequence: number, mediaId: string, watchedDeltaMs: number, videoRanges: PlaybackCheckpoint['media'][number]['videoRanges'] = []): PlaybackCheckpoint => ({
+      sessionId: 'integration-playback-session', sequence, watchedDeltaMs,
+      media: [{ entryId: `album:${albumId}`, mediaId, watchedDeltaMs, imageElapsedMs: watchedDeltaMs, positionMs: videoRanges.at(-1)?.endMs ?? 0, durationMs: mediaId === videoId ? 10_000 : 0, videoRanges, watchedAt: Date.now() }]
+    })
+    await client.request<PlaybackStats>('playback-checkpoint', checkpoint(1, firstImageId, 3_000))
+    const partlyWatched = await client.request<PlaybackStats>('playback-checkpoint', checkpoint(2, secondImageId, 3_000))
+    expect(partlyWatched.achievements).toEqual([])
+    await client.request<PlaybackStats>('playback-checkpoint', checkpoint(3, videoId, 5_000, [{ startMs: 0, endMs: 5_000 }]))
+    const completed = await client.request<PlaybackStats>('playback-checkpoint', checkpoint(4, videoId, 5_000, [{ startMs: 5_000, endMs: 10_000 }]))
+    expect(completed.totalWatchedMs).toBe(16_000)
+    expect(completed.xp).toBe(1)
+    expect(completed.xpInLevel).toBe(1)
+    expect(completed.achievements.map((item) => item.id)).toEqual(['first-album'])
+    expect(completed.progress.find((item) => item.mediaId === videoId)?.videoRanges).toEqual([{ startMs: 0, endMs: 10_000 }])
+
+    const retried = await client.request<PlaybackStats>('playback-checkpoint', checkpoint(4, videoId, 5_000, [{ startMs: 5_000, endMs: 10_000 }]))
+    expect(retried.totalWatchedMs).toBe(16_000)
+    expect(retried.achievements.map((item) => item.id)).toEqual(['first-album'])
+
+    const resetImageClock = await client.request<PlaybackStats>('playback-checkpoint', checkpoint(5, firstImageId, 0))
+    expect(resetImageClock.totalWatchedMs).toBe(16_000)
+    expect(resetImageClock.xp).toBe(1)
+    expect(resetImageClock.progress.find((item) => item.mediaId === firstImageId)).toMatchObject({ watchedMs: 3_000, imageElapsedMs: 0 })
   })
 
   it('coalesces per-file progress notifications', async () => {
@@ -565,6 +658,23 @@ describe('import worker integration', () => {
     await client.request('delete-coser', coser.id)
     expect((await client.request<Library>('get-library')).albums).toContainEqual(expect.objectContaining({ id: albumId }))
     await expect(client.request('get-coser', coser.id)).rejects.toThrow('Coser 不存在')
+  })
+
+  it('persists smart import mappings and model cache across worker restarts', async () => {
+    const coser = await client.request<Coser>('create-coser', { name: '智能映射测试', aliases: ['Smart Alias'] })
+    const mappingSignature = 'a'.repeat(64)
+    const cacheSignature = 'b'.repeat(64)
+    const cachedResult = JSON.stringify({ status: 'unknown', coserId: 'none', proposedName: '', evidence: 'unknown folder', reason: 'no candidate' })
+    await client.request('set-smart-coser-mapping', { signature: mappingSignature, coserId: coser.id })
+    await client.request('set-smart-coser-model-cache', { signature: cacheSignature, result: cachedResult })
+    expect(await client.request<Array<{ id: string; aliases: string[] }>>('get-smart-coser-index')).toContainEqual(expect.objectContaining({ id: coser.id, aliases: ['Smart Alias'] }))
+
+    await client.dispose()
+    client = new ImportWorkerClient(join(root, 'gallery.sqlite'), root)
+
+    expect(await client.request('get-smart-coser-mapping', { signature: mappingSignature })).toBe(coser.id)
+    expect(await client.request('get-smart-coser-mappings', [mappingSignature])).toEqual({ [mappingSignature]: coser.id })
+    expect(await client.request('get-smart-coser-model-cache', { signature: cacheSignature })).toBe(cachedResult)
   })
 
   it('only exposes current Coser album images as avatar sources', async () => {

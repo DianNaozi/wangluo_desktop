@@ -1,0 +1,9 @@
+import { defineConfig } from 'vitest/config'
+import vue from '@vitejs/plugin-vue'
+import { resolve } from 'node:path'
+
+export default defineConfig({
+  plugins: [vue()],
+  resolve: { alias: { '@': resolve('src/renderer/src') } },
+  test: { environment: './tests/vue-client-environment.ts' }
+})

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
-const props = defineProps<{ id: string; src: string; title: string; nextSrc?: string }>()
-const emit = defineEmits<{ ready: [id: string]; loading: []; error: [message: string] }>()
+const props = defineProps<{ id: string; src: string; title: string; nextSrc?: string; retryToken?: number }>()
+const emit = defineEmits<{ ready: [id: string]; loading: [id: string]; error: [id: string, message: string] }>()
 const current = ref<{ src: string; title: string } | null>(null)
 const previous = ref<{ src: string; title: string } | null>(null)
 const fading = ref(false)
@@ -21,13 +21,13 @@ function cancelTransition(): void {
   previous.value = null
 }
 
-watch(() => [props.id, props.src], async () => {
+watch(() => [props.id, props.src, props.retryToken], async () => {
   const request = ++revision
   const id = props.id
   const src = props.src
   const title = props.title
   cancelTransition()
-  emit('loading')
+  emit('loading', id)
   try {
     const image = new Image()
     image.src = src
@@ -54,7 +54,7 @@ watch(() => [props.id, props.src], async () => {
       })
     })
   } catch {
-    if (request === revision) emit('error', '无法读取图片，可点击上一项或下一项继续播放')
+    if (request === revision) emit('error', id, '无法读取图片，可点击上一项或下一项继续播放')
   }
 }, { immediate: true })
 

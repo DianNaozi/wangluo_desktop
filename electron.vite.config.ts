@@ -34,7 +34,7 @@ export default defineConfig({
   },
   renderer: {
     plugins: [vue(), tailwindcss(), copyRendererPublicAssets()],
-    server: { host: '127.0.0.1' },
+    server: { host: '127.0.0.1', port: 5500 },
     resolve: { alias: { '@': resolve('src/renderer/src') } }
   }
 })

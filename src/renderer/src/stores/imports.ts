@@ -2,6 +2,7 @@ import { computed, onScopeDispose, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { importCompletionNotice, isTerminalImportJob, recordTerminalImportJob, type ImportCompletionNotice } from '@/utils/import-feedback'
 import { reportStartupStage } from '@/utils/startup-performance'
+import type { SmartCoserIndexItem, SmartFolderImportDecision, SmartFolderImportSession } from '../../../main/import/smart-folder-coser'
 
 type DropImportDestination = { type: 'library' } | { type: 'folder'; folderId: string } | { type: 'coser'; coserId: string }
 
@@ -16,6 +17,10 @@ export const useImportStore = defineStore('imports', () => {
   const completedImportRevision = ref(0)
   const previewRevision = ref(0)
   const completionNotices = ref<ImportCompletionNotice[]>([])
+  const smartFolderSessions = ref<SmartFolderImportSession[]>([])
+  const smartCoserChoices = ref<SmartCoserIndexItem[]>([])
+  const smartFolderErrors = ref<Record<string, string>>({})
+  let smartCoserChoicesPromise: Promise<void> | undefined
   let snapshotTimer: ReturnType<typeof setTimeout> | undefined
   let refreshInFlight: Promise<void> | undefined
   let refreshRequestedAgain = false
@@ -76,14 +81,18 @@ export const useImportStore = defineStore('imports', () => {
     await run(() => window.api.media.importFiles(typeof folderId === 'string' ? folderId : null))
   }
   async function importFolders(folderId: string | null | Event = null): Promise<void> {
-    await run(() => window.api.media.importFolders(typeof folderId === 'string' ? folderId : null))
+    await run(async () => {
+      const result = await window.api.media.importFolders(typeof folderId === 'string' ? folderId : null)
+      if (result && 'items' in result) acceptSmartFolderSession(result)
+    })
   }
   async function importDroppedFolders(files: File[], destination: DropImportDestination): Promise<void> {
     if (!files.length) return
     droppedFolderScans.value += 1
     droppedFolderError.value = ''
     try {
-      await window.api.media.importDroppedFolders(files, destination)
+      const result = await window.api.media.importDroppedFolders(files, destination)
+      if ('items' in result) acceptSmartFolderSession(result)
       await refresh()
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason)
@@ -93,6 +102,31 @@ export const useImportStore = defineStore('imports', () => {
     }
   }
   function dismissDroppedFolderError(): void { droppedFolderError.value = '' }
+  function acceptSmartFolderSession(session: SmartFolderImportSession): void {
+    const reviewable = session.items.some((item) => ['matching', 'review', 'committing'].includes(item.status))
+    const index = smartFolderSessions.value.findIndex((current) => current.id === session.id)
+    if (!reviewable) {
+      if (index !== -1) smartFolderSessions.value.splice(index, 1)
+      delete smartFolderErrors.value[session.id]
+      return
+    }
+    if (index === -1) smartFolderSessions.value.unshift(session)
+    else smartFolderSessions.value.splice(index, 1, session)
+    if (!smartCoserChoicesPromise) smartCoserChoicesPromise = window.api.library.getSmartCoserIndex().then((cosers) => { smartCoserChoices.value = cosers }).catch((reason) => { error.value = reason instanceof Error ? reason.message : String(reason) }).finally(() => { smartCoserChoicesPromise = undefined })
+  }
+  async function resolveSmartFolderImport(sessionId: string, decisions: SmartFolderImportDecision[]): Promise<void> {
+    delete smartFolderErrors.value[sessionId]
+    try {
+      acceptSmartFolderSession(await window.api.media.resolveSmartFolderImport(sessionId, decisions))
+      await refresh()
+    } catch (reason) { smartFolderErrors.value[sessionId] = reason instanceof Error ? reason.message : String(reason) }
+  }
+  async function cancelSmartFolderImport(sessionId: string): Promise<void> {
+    try {
+      const session = await window.api.media.cancelSmartFolderImport(sessionId)
+      if (session) acceptSmartFolderSession(session)
+    } catch (reason) { smartFolderErrors.value[sessionId] = reason instanceof Error ? reason.message : String(reason) }
+  }
   async function retryJob(jobId: string): Promise<void> { await run(() => window.api.media.retryJob(jobId)) }
   async function rebuildPreviews(): Promise<void> { await run(() => window.api.media.rebuildPreviews()) }
   async function retryPreview(mediaId: string): Promise<void> { await run(() => window.api.media.retryPreview(mediaId)) }
@@ -127,11 +161,13 @@ export const useImportStore = defineStore('imports', () => {
   onScopeDispose(unsubscribePreviews)
   const unsubscribeServiceErrors = window.api.media.onImportServiceError((event) => { error.value = event.message })
   onScopeDispose(unsubscribeServiceErrors)
+  const unsubscribeSmartFolderSessions = window.api.media.onSmartFolderImportProgress(acceptSmartFolderSession)
+  onScopeDispose(unsubscribeSmartFolderSessions)
   onScopeDispose(() => {
     if (snapshotTimer) clearTimeout(snapshotTimer)
     noticeTimers.forEach((timer) => clearTimeout(timer))
     noticeTimers.clear()
   })
 
-  return { jobs, snapshot, folderTree, loading, error, droppedFolderScans, droppedFolderError, completedImportRevision, previewRevision, completionNotices, activeJobs, activeJob, queuedJobCount, dismissCompletionNotice, dismissDroppedFolderError, refresh, importFiles, importFolders, importDroppedFolders, retryJob, rebuildPreviews, retryPreview, trashMedia, trashAlbum }
+  return { jobs, snapshot, folderTree, loading, error, droppedFolderScans, droppedFolderError, completedImportRevision, previewRevision, completionNotices, smartFolderSessions, smartCoserChoices, smartFolderErrors, activeJobs, activeJob, queuedJobCount, dismissCompletionNotice, dismissDroppedFolderError, resolveSmartFolderImport, cancelSmartFolderImport, refresh, importFiles, importFolders, importDroppedFolders, retryJob, rebuildPreviews, retryPreview, trashMedia, trashAlbum }
 })

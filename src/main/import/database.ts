@@ -171,6 +171,69 @@ const migrations: Array<{ id: string; sql: string }> = [
       END;
     `
   }
+  ,{
+    id: '0011_playback_rewards',
+    sql: `
+      CREATE TABLE playback_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        queue_json TEXT NOT NULL DEFAULT '[]',
+        cursor_entry_id TEXT,
+        cursor_media_id TEXT,
+        last_entry_id TEXT,
+        last_media_id TEXT,
+        image_interval_seconds INTEGER NOT NULL DEFAULT 5,
+        loop_enabled INTEGER NOT NULL DEFAULT 1,
+        total_watched_ms INTEGER NOT NULL DEFAULT 0,
+        xp_remainder_ms INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO playback_state (id, updated_at) VALUES (1, 0);
+      CREATE TABLE playback_media_progress (
+        entry_id TEXT NOT NULL,
+        media_id TEXT NOT NULL,
+        watched_ms INTEGER NOT NULL DEFAULT 0,
+        image_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+        video_position_ms INTEGER NOT NULL DEFAULT 0,
+        video_duration_ms INTEGER NOT NULL DEFAULT 0,
+        video_ranges_json TEXT NOT NULL DEFAULT '[]',
+        last_watched_at INTEGER,
+        PRIMARY KEY (entry_id, media_id)
+      );
+      CREATE INDEX playback_media_progress_media_idx ON playback_media_progress(media_id);
+      CREATE TABLE playback_sessions (
+        id TEXT PRIMARY KEY,
+        sequence INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE playback_days (
+        date TEXT PRIMARY KEY,
+        watched_ms INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE playback_achievements (
+        id TEXT PRIMARY KEY,
+        earned_at INTEGER NOT NULL
+      );
+      CREATE TABLE playback_completed_albums (
+        album_id TEXT PRIMARY KEY,
+        completed_at INTEGER NOT NULL
+      );
+    `
+  }
+  ,{
+    id: '0012_smart_coser_import',
+    sql: `
+      CREATE TABLE smart_coser_folder_mappings (
+        mapping_key TEXT PRIMARY KEY,
+        coser_id TEXT NOT NULL REFERENCES cosers(id) ON DELETE CASCADE,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE smart_coser_model_cache (
+        cache_key TEXT PRIMARY KEY,
+        result_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `
+  }
 ]
 
 export type GalleryDatabase = { sqlite: Database.Database; db: BetterSQLite3Database }
